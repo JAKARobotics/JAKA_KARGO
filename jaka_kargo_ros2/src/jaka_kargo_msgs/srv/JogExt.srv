@@ -1,0 +1,7 @@
+int32 ext_id
+int32 is_abs    # 0=ABS, 1=REL(user), 2=REL(tool)
+float64 vel
+float64 step
+---
+int32 ret
+string message

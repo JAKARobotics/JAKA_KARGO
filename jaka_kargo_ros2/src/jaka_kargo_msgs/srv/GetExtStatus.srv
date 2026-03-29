@@ -1,0 +1,13 @@
+int32 ext_id    # -1 = all, 0..3 = one axis
+---
+int32 ret
+string message
+int32 count
+bool[] is_powered
+bool[] is_powering
+bool[] is_enabled
+bool[] is_enabling
+bool[] is_inpos
+bool[] is_on_limit
+float64[] pos_cmd
+float64[] pos_fdb

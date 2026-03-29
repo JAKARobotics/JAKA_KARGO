@@ -1,0 +1,7 @@
+int16 robot_index    # 0=LEFT, 1=RIGHT
+
+---
+
+int16 ret
+int16 level          # 0..5
+string message

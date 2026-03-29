@@ -1,0 +1,8 @@
+int16  robot_index     # 0=LEFT, 1=RIGHT
+float32[7] ref_joints
+float32[6] cartesian_pose
+
+---
+
+float32[] joints
+string message

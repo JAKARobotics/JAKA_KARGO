@@ -1,0 +1,23 @@
+# Request
+int16 robot_index     # -1: DUAL, 0: LEFT, 1: RIGHT
+bool  is_block        # true = blocking motion
+
+int16 mode_left       # 0 = ABS, 1 = INCR
+int16 mode_right      # 0 = ABS, 1 = INCR
+
+# For linear_move: Poses as [x, y, z, rx, ry, rz], positions in millimeters, angles in radians
+# For joint_move: Per-arm joints (radians)
+float32[] pose_left
+float32[] pose_right
+
+# For linear_move: Per-arm speed/accel (units per your controller: mm/s and mm/s^2)
+# For joint_move: Per-arm joint speed/accel (rad/s, rad/s^2)
+float32 vel_left
+float32 vel_right
+float32 acc_left
+float32 acc_right
+
+---
+
+int16  ret
+string message

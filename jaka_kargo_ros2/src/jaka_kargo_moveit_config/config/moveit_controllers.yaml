@@ -1,0 +1,74 @@
+# MoveIt uses this configuration for controller management
+
+moveit_controller_manager: moveit_simple_controller_manager/MoveItSimpleControllerManager
+
+moveit_simple_controller_manager:
+  controller_names:
+    - jaka_kargo_body_controller
+    - jaka_kargo_arm_l_controller
+    - jaka_kargo_arm_r_controller
+    - jaka_kargo_full_robot_controller
+
+  jaka_kargo_body_controller:
+    type: FollowJointTrajectory
+    action_ns: follow_joint_trajectory
+    default: true
+    joints:
+      - body_j1
+      - body_j2
+      - body_j3
+      - body_j4
+  jaka_kargo_arm_l_controller:
+    type: FollowJointTrajectory
+    action_ns: follow_joint_trajectory
+    default: true
+    joints:
+      - arm_lj1
+      - arm_lj2
+      - arm_lj3
+      - arm_lj4
+      - arm_lj5
+      - arm_lj6
+      - arm_lj7
+  jaka_kargo_arm_r_controller:
+    type: FollowJointTrajectory
+    action_ns: follow_joint_trajectory
+    default: true
+    joints:
+      - arm_rj1
+      - arm_rj2
+      - arm_rj3
+      - arm_rj4
+      - arm_rj5
+      - arm_rj6
+      - arm_rj7
+  jaka_kargo_full_robot_controller:
+    type: FollowJointTrajectory
+    action_ns: follow_joint_trajectory
+    default: true
+    joints:
+      - body_j1
+      - body_j2
+      - body_j3
+      - body_j4
+      - arm_lj1
+      - arm_lj2
+      - arm_lj3
+      - arm_lj4
+      - arm_lj5
+      - arm_lj6
+      - arm_lj7
+      - arm_rj1
+      - arm_rj2
+      - arm_rj3
+      - arm_rj4
+      - arm_rj5
+      - arm_rj6
+      - arm_rj7
+
+trajectory_execution:
+  allowed_execution_duration_scaling: 1.5     # or 2.0, to allow 50-100% extra time
+  allowed_goal_duration_margin: 2.0          # extra seconds to wait
+  allowed_start_tolerance: 0.01  # Increase tolerance to reduce validation delay
+  execution_duration_monitoring: false
+  moveit_manage_controllers: true

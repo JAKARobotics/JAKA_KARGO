@@ -1,0 +1,7 @@
+int16   robot_index     # 0=LEFT, 1=RIGHT
+float32[6] pose_rpy     # [x,y,z, rx,ry,rz]; x,y,z in millimeters; angles in radians
+
+---
+
+int16 ret
+string message

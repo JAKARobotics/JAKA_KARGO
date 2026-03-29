@@ -1,0 +1,21 @@
+# Default initial positions for jaka_kargo's ros2_control fake system
+
+initial_positions:
+  arm_lj1: 0
+  arm_lj2: 0
+  arm_lj3: 0
+  arm_lj4: 0
+  arm_lj5: 0
+  arm_lj6: 0
+  arm_lj7: 0
+  arm_rj1: 0
+  arm_rj2: 0
+  arm_rj3: 0
+  arm_rj4: 0
+  arm_rj5: 0
+  arm_rj6: 0
+  arm_rj7: 0
+  body_j1: 0
+  body_j2: 0
+  body_j3: 0
+  body_j4: 0

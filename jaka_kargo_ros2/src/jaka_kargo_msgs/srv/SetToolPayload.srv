@@ -1,0 +1,10 @@
+int16  robot_index     # 0=LEFT, 1=RIGHT
+float32 mass           # kg
+float32 xc             # tool CoM x (controller units: mm)
+float32 yc             # tool CoM y (controller units: mm)
+float32 zc             # tool CoM z (controller units: mm)
+
+---
+
+int16  ret
+string message

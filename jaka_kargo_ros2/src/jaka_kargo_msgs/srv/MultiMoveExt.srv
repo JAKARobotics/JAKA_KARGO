@@ -1,0 +1,8 @@
+bool is_block
+bool use_di_info
+jaka_kargo_msgs/DIInfo di_info
+int32 planner_type
+jaka_kargo_msgs/MultiMoveUnit[] moves
+---
+int32 ret
+string message

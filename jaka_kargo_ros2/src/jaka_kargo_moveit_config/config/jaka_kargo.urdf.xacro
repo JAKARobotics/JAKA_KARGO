@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="jaka_kargo">
+    <xacro:arg name="initial_positions_file" default="initial_positions.yaml" />
+    <xacro:arg name="use_gazebo" default="false"/>
+    <xacro:arg name="use_rviz_sim" default="false"/>
+    <xacro:arg name="use_isaac_sim" default="false"/>
+
+    <!-- Import jaka_kargo urdf file -->
+    <xacro:include filename="$(find jaka_kargo_description)/urdf/jaka_kargo.urdf" />
+
+    <!-- Import control_xacro -->
+    <xacro:include filename="jaka_kargo.ros2_control.xacro" />
+
+
+    <xacro:jaka_kargo_ros2_control name="jaka_kargo_hardware" initial_positions_file="$(arg initial_positions_file)" use_gazebo="$(arg use_gazebo)" use_rviz_sim="$(arg use_rviz_sim)" use_isaac_sim="$(arg use_isaac_sim)" />
+
+</robot>

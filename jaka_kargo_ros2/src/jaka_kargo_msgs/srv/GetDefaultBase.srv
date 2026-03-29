@@ -1,0 +1,7 @@
+int16  robot_index        # 0=LEFT, 1=RIGHT
+
+---
+
+int16  ret
+float32[6] base_rpy       # [x,y,z, rx,ry,rz]; mm + radians
+string message

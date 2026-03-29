@@ -1,0 +1,9 @@
+int16  robot_index   # 0=LEFT, 1=RIGHT
+float32[] pose       # P: [x,y,z,rx,ry,rz] or J: [j0..j6]
+# int16  move_mode     # 0=ABS, 1=INCR
+# uint32 step_num
+
+---
+
+int16  ret
+string message

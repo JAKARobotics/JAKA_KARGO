@@ -1,0 +1,92 @@
+# This config file is used by ros2_control
+controller_manager:
+  ros__parameters:
+    update_rate: 1000  # Hz
+
+    jaka_kargo_body_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+
+    jaka_kargo_arm_l_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+
+    jaka_kargo_arm_r_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+
+    jaka_kargo_full_robot_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+jaka_kargo_body_controller:
+  ros__parameters:
+    joints:
+      - body_j1
+      - body_j2
+      - body_j3
+      - body_j4
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+jaka_kargo_arm_l_controller:
+  ros__parameters:
+    joints:
+      - arm_lj1
+      - arm_lj2
+      - arm_lj3
+      - arm_lj4
+      - arm_lj5
+      - arm_lj6
+      - arm_lj7
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+jaka_kargo_arm_r_controller:
+  ros__parameters:
+    joints:
+      - arm_rj1
+      - arm_rj2
+      - arm_rj3
+      - arm_rj4
+      - arm_rj5
+      - arm_rj6
+      - arm_rj7
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+jaka_kargo_full_robot_controller:
+  ros__parameters:
+    joints:
+      - body_j1
+      - body_j2
+      - body_j3
+      - body_j4
+      - arm_lj1
+      - arm_lj2
+      - arm_lj3
+      - arm_lj4
+      - arm_lj5
+      - arm_lj6
+      - arm_lj7
+      - arm_rj1
+      - arm_rj2
+      - arm_rj3
+      - arm_rj4
+      - arm_rj5
+      - arm_rj6
+      - arm_rj7
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity

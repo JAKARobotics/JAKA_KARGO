@@ -1,0 +1,10 @@
+int16  robot_index       # 0=LEFT, 1=RIGHT
+
+---
+
+int16  ret
+float32[] alpha          # size = JAKA_ROBOT_MAX_JOINT
+float32[] a              # size = JAKA_ROBOT_MAX_JOINT
+float32[] d              # size = JAKA_ROBOT_MAX_JOINT
+float32[] joint_homeoff  # size = JAKA_ROBOT_MAX_JOINT
+string  message

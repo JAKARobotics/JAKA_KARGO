@@ -1,0 +1,1 @@
+controller_joint_names: ['', 'wheel_1', 'wheel_2', 'wheel_3', 'wheel_4', 'wheel_5', 'wheel_6', 'body_j1', 'body_j2', 'body_j3', 'body_j4', 'arm_rj1', 'arm_rj2', 'arm_rj3', 'arm_rj4', 'arm_rj5', 'arm_rj6', 'arm_rj7', 'arm_lj1', 'arm_lj2', 'arm_lj3', 'arm_lj4', 'arm_lj5', 'arm_lj6', 'arm_lj7', ]

@@ -1,0 +1,10 @@
+int16  robot_index   # 0=LEFT, 1=RIGHT
+
+---
+
+int16  ret
+float32 mass         # kg
+float32 xc           # mm
+float32 yc           # mm
+float32 zc           # mm
+string message

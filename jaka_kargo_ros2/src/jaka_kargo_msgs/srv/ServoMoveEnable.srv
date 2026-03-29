@@ -1,0 +1,8 @@
+int16 robot_index        # -1: DUAL, 0: LEFT, 1: RIGHT
+bool enable
+bool is_block
+
+---
+
+int16 ret
+string message
