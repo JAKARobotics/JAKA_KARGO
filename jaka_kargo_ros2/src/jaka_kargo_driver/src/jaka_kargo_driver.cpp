@@ -26,7 +26,7 @@
 #include "jaka_kargo_msgs/srv/ext_enable.hpp"
 #include "jaka_kargo_msgs/srv/jog_ext.hpp"
 #include "jaka_kargo_msgs/srv/multi_move_ext.hpp"
-#include "jaka_kargo_msgs/srv/get_ext_status.hpp"
+// #include "jaka_kargo_msgs/srv/get_ext_status.hpp"
 
 #include "jaka_kargo_driver/JAKAZuRobot.h"
 #include "jaka_kargo_driver/jkerr.h"
@@ -1631,8 +1631,8 @@ int main(int argc, char *argv[])
     auto get_dh_params_service = node->create_service<jaka_kargo_msgs::srv::GetDHParams>("/jaka_kargo_driver/get_dh_params", &get_dh_params_callback);
     auto ext_enable_service = node->create_service<jaka_kargo_msgs::srv::ExtEnable>("/jaka_kargo_driver/ext_enable", &ext_enable_callback);
     auto jog_ext_service = node->create_service<jaka_kargo_msgs::srv::JogExt>("/jaka_kargo_driver/jog_ext", &jog_ext_callback);
-    auto get_ext_status_service = node->create_service<jaka_kargo_msgs::srv::GetExtStatus>("/jaka_kargo_driver/get_ext_status", &get_ext_status_callback);
     auto multi_move_ext_service = node->create_service<jaka_kargo_msgs::srv::MultiMoveExt>("/jaka_kargo_driver/multi_move_ext", &multi_move_ext_callback);
+    // auto get_ext_status_service = node->create_service<jaka_kargo_msgs::srv::GetExtStatus>("/jaka_kargo_driver/get_ext_status", &get_ext_status_callback);
 
     // //3.1 End position pose status information reporting
     tool_position_pub = node->create_publisher<geometry_msgs::msg::TwistStamped>("/jaka_kargo_driver/tool_position", 10);

@@ -544,17 +544,17 @@
     name="body_j1_link">
     <inertial>
       <origin
-        xyz="0 0 0"
-        rpy="0 0 0" />
-      <mass
-        value="0" />
+        xyz="-0.118334 0.028754 1.077211" 
+        rpy="0 0 0"/>
+      <mass 
+        value="12.252"/>
       <inertia
-        ixx="0"
-        ixy="0"
-        ixz="0"
-        iyy="0"
-        iyz="0"
-        izz="0" />
+        ixx="0.06815247" 
+        ixy="-0.00191716" 
+        ixz="-0.00049915"
+        iyy="0.05943495" 
+        iyz="0.00134008"
+        izz="0.07689145"/>
     </inertial>
     <visual>
       <origin
