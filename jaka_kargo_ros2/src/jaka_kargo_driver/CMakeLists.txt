@@ -55,7 +55,7 @@ set(LIBRARY_DIR ${CMAKE_CURRENT_SOURCE_DIR}/lib)
 link_directories(${LIBRARY_DIR})
 
 # Find the library and link it properly
-target_link_libraries(jaka_kargo_driver ${LIBRARY_DIR}/libjakaAPI_2_3_0_DUAL_7.so)
+target_link_libraries(jaka_kargo_driver ${LIBRARY_DIR}/libjakaAPI_2_3_0_DUAL_9.so)
 
 # Install executables
 install(TARGETS

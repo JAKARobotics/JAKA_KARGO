@@ -56,7 +56,7 @@ ros2 launch jaka_kargo_moveit_config demo.launch.py
 
 ### 1. jaka_kargo_driver
 
-- Node `jaka_kargo_driver` — connects to controller using JAKA's SDK `libjakaAPI_2_3_0_DUAL_7.so` included in **jaka_kargo_driver/lib**, and exposes:
+- Node `jaka_kargo_driver` — connects to controller using JAKA's SDK `libjakaAPI_2_3_0_DUAL_9.so` included in **jaka_kargo_driver/lib**, and exposes:
 
     - Topics
         - `/jaka_kargo_driver/tool_position` (geometry_msgs/TwistStamped) — dual-arm TCP cartesian pose
@@ -88,7 +88,7 @@ ros2 launch jaka_kargo_moveit_config demo.launch.py
 
 ### 3. jaka_kargo_planner
 
-- links against `libjakaAPI_2_3_0_DUAL_7.so` included in **jaka_kargo_planner/lib**. 
+- links against `libjakaAPI_2_3_0_DUAL_9.so` included in **jaka_kargo_planner/lib**. 
 - Provides `FollowJointTrajectory` action servers for moveit:
     - `/jaka_kargo_full_robot_controller/follow_joint_trajectory` (18 joints — full-robot: 7 left arm + 7 right arm + 4 body / external axis joints)
     - `/jaka_kargo_arm_l_controller/follow_joint_trajectory `(7 joints — left-arm)

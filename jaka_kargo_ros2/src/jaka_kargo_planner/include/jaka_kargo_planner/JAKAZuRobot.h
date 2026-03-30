@@ -2855,6 +2855,70 @@ public:
 		
 ///@}
 
+///@name DexH13 part
+///@{
+
+	/**
+	* @brief 使能灵巧手
+	* @param robot_id 机器人索引号，0表示左臂，1表示右臂
+	* @return ERR_SUCC 成功 其他失败
+	*/
+	errno_t enable_Hand(int robot_id);
+	
+	/**
+	* @brief 禁止灵巧手
+	* @param robot_id 机器人索引号，0表示左臂，1表示右臂
+	* @return ERR_SUCC 成功 其他失败
+	*/
+	errno_t disable_Hand(int robot_id);
+
+	/**
+	* @brief 查询灵巧手使能状态
+	* @param robot_id 机器人索引号，0表示左臂，1表示右臂
+	* @return ERR_SUCC 成功 其他失败
+	*/
+	errno_t is_Hand_Enabled(int robot_id, BOOL* is_enable);
+
+	/**
+	* @brief 单电机位置控制
+	* @param robot_id 机器人索引号，0表示左臂，1表示右臂
+	* @param motor_id 电机索引
+	* @param pos 电机位置
+	* @return ERR_SUCC 成功 其他失败
+	*/
+	errno_t set_Motor_Position(int robot_id, int motor_id, int32_t pos);
+
+	/**
+	* @brief 多电机位置控制
+	* @param robot_id 机器人索引号，0表示左臂，1表示右臂
+	* @param positions 13个电机位置
+	* @return ERR_SUCC 成功 其他失败
+	*/
+	errno_t set_Motor_Positions(int robot_id, const std::array<int32_t,13>& positions); 
+
+	/**
+	* @brief 读取灵巧手状态 (电机,传感器)
+	* @param robot_id 机器人索引号，0表示左臂，1表示右臂
+	* @param handstate 灵巧手状态
+	* @return ERR_SUCC 成功 其他失败
+	*/
+	errno_t get_Hand_State(int robot_id, HandState& handstate);
+
+	/**
+	* @brief 写 DexH13 原始 RxPDO 200 字节
+	* @param robot_id 机器人索引号，0表示左臂，1表示右臂
+	* @return ERR_SUCC 成功 其他失败
+	*/
+    errno_t set_Raw_RxPDO(int robot_id, const std::array<uint8_t,200>& raw_frame);
+
+	/**
+	* @brief 读 DexH13 原始 TxPDO  600 字节
+	* @param robot_id 机器人索引号，0表示左臂，1表示右臂
+	* @return ERR_SUCC 成功 其他失败
+	*/
+	errno_t get_Raw_TxPDO(int robot_id, std::array<uint8_t,600>& raw_frames);
+///@}
+
 
 	~JAKAZuRobot();
 

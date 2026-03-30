@@ -10,7 +10,7 @@
 
 #include <stdio.h>
 #include <stdint.h>
-
+#include <array>
 
 #define JAKA_ROBOT_MAX_JOINT 7
 #define LEFT 0
@@ -681,11 +681,11 @@ typedef struct
 typedef void (*CallBackFuncType)(char* info);
 
 typedef struct{
-    double end_pos[MAX_AXIS];
-    double j_vel;
-    double j_acc;
-    double j_jerk;
-    double blend_tol;
+    double end_pos[MAX_AXIS];  //目标关节位置
+    double j_vel; //关节速度
+    double j_acc; //关节加速度
+    double j_jerk; //关节加加速度
+    double blend_tol; //轨迹混合容差   用于连续轨迹运动时的平滑过渡控制,一般在多段轨迹连续执行时生效；单段运动时可置0
 } MovejInfo;
 
 typedef struct{
@@ -719,18 +719,74 @@ typedef enum{
     CIRCULAR_MOVE = 2
 } MoveType;
 
-typedef struct{
-    int motion_unit_type;
-    int motion_unit_id; // robot_id(motion_unit_type is 0) or ext_id(motion_unit_type is 1)
-    MoveType move_type;
-    MoveMode move_mode;
-    MovejInfo movej_info;
-    MovelInfo movel_info;
-    MovecInfo movec_info;
-}MultiMovInfo;
-
+/**
+ * @brief 单个运动单元的运动描述信息
+ */
 typedef struct {
-    int count;  ///< Number of move
+    /**
+     * @brief 运动单元类型
+     * - 0: robot_arm，机械臂
+     * - 1: robot_ext，外部轴
+     */
+    int motion_unit_type;
+
+    /**
+     * @brief 运动单元 ID
+     * - 当 motion_unit_type == 0 时，表示 robot_id，当前支持 0 / 1
+     * - 当 motion_unit_type == 1 时，表示 ext_id
+     */
+    int motion_unit_id;
+
+    /**
+     * @brief 运动类型
+     * 可选值：
+     * - JOINT_MOVE    关节运动
+     * - LINEAR_MOVE   直线运动
+     * - CIRCULAR_MOVE 圆弧运动
+     */
+    MoveType move_type;
+
+    /**
+     * @brief 运动模式
+     * 可选值：
+     * - ABS 绝对运动
+     * - INC 增量运动
+     */
+    MoveMode move_mode;
+
+    /**
+     * @brief 关节运动参数
+     * 仅当 move_type == JOINT_MOVE 时有效
+     */
+    MovejInfo movej_info;
+
+    /**
+     * @brief 直线运动参数
+     * 仅当 move_type == LINEAR_MOVE 时有效
+     */
+    MovelInfo movel_info;
+
+    /**
+     * @brief 圆弧运动参数
+     * 仅当 move_type == CIRCULAR_MOVE 时有效
+     */
+    MovecInfo movec_info;
+} MultiMovInfo;
+
+/**
+ * @brief 多运动单元运动信息列表
+ */
+typedef struct {
+    /**
+     * @brief 有效运动单元数量
+     * 取值范围：[0, MAX_EXT_CNT]
+     */
+    int count;
+
+    /**
+     * @brief 运动信息数组
+     * 仅 info[0 ~ count-1] 为有效数据
+     */
     MultiMovInfo info[MAX_EXT_CNT];
 } MultiMovInfoList;
 
@@ -751,5 +807,42 @@ typedef struct
     int count;
     ExtAxisStatus status[MAX_EXT_CNT];
 }ExtAxisStatusList;
+
+
+
+/// 单个电机状态
+struct MotorState {
+    uint8_t state;      // 工作状态位
+    int16_t speed;      // rpm
+    int32_t position;   // 0.01度单位
+    int16_t current;    // 电流
+    uint32_t err_code;  // 错误码
+};
+
+/// 单个触点状态
+struct ContactPoint {
+    int8_t x;
+    int8_t y;
+    int8_t z;
+    uint8_t force;      // 0.1N单位
+};
+
+/// 单个传感器状态
+struct SensorState {
+    int8_t force_x;             // 合力x
+    int8_t force_y;             // 合力y
+    uint8_t force_z;            // 合力z
+    std::array<ContactPoint, 6> contacts; // 6个触点
+    uint16_t temperature;       // 0.1℃单位
+    bool disconnected;          // 是否失联
+};
+
+/// 灵巧手整体状态
+struct HandState {
+    bool enabled;                        // 手是否使能
+    std::array<MotorState, 13> motors;   // 13 个电机
+    std::array<SensorState, 11> sensors; // 11 个传感器
+    uint8_t frame_count;                 // 最近一帧编号（1~3）
+};
 
 #endif
