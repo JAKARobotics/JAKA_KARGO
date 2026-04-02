@@ -110,9 +110,7 @@ static IndexMapFull build_index_map_full(const vector<string>& names)
     return m;
 }
 
-static bool build_index_map_single(const vector<string>& names,
-                                   const char* prefix,
-                                   array<int,7>& out)
+static bool build_index_map_single(const vector<string>& names, const char* prefix, array<int,7>& out)
 {
     unordered_map<string,int> idx;
     for (int i = 0; i < (int)names.size(); ++i) idx[names[i]] = i;
@@ -223,8 +221,7 @@ static bool read_ext_feedback(array<double,4>& out_pos)
     return true;
 }
 
-static bool ext_target_reached(const array<double,4>& current_pos,
-                               const array<double,4>& target_pos)
+static bool ext_target_reached(const array<double,4>& current_pos, const array<double,4>& target_pos)
 {
     // joint 0: mm, joints 1..3: deg
     if (std::abs(current_pos[0] - target_pos[0]) > 0.5) return false;
@@ -246,9 +243,7 @@ static array<double,4> extract_ext_target_sdk_units(
     return ext_target;
 }
 
-static bool send_ext_target_nonblocking(const array<double,4>& ext_target,
-                                        double vel,
-                                        double acc)
+static bool send_ext_target_nonblocking(const array<double,4>& ext_target, double vel, double acc)
 {
     MultiMovInfoList cmd{};
     cmd.count = 4;
@@ -270,8 +265,7 @@ static bool send_ext_target_nonblocking(const array<double,4>& ext_target,
 }
 
 // ----- execute full body: 18 joints -----
-void execute_full_robot_goal(const shared_ptr<GoalHandle> gh, rclcpp::Node::SharedPtr node,
-                            double ext_vel, double ext_acc)
+void execute_full_robot_goal(const shared_ptr<GoalHandle> gh, rclcpp::Node::SharedPtr node, double ext_vel, double ext_acc)
 {
     auto goal = gh->get_goal();
     const auto& traj = goal->trajectory;
@@ -467,7 +461,7 @@ void execute_full_robot_goal(const shared_ptr<GoalHandle> gh, rclcpp::Node::Shar
             robot.motion_abort();
             stop_all_ext_axes();
             disable_arm_servos();
-            disable_all_ext_axes();
+            // disable_all_ext_axes();
             RCLCPP_WARN(node->get_logger(),
                         "Timeout waiting for full-robot target position (errL=%.4f errR=%.4f ext_ok=%d)",
                         errL, errR, (int)ext_ok);
@@ -482,7 +476,7 @@ void execute_full_robot_goal(const shared_ptr<GoalHandle> gh, rclcpp::Node::Shar
     }
 
     disable_arm_servos();
-    disable_all_ext_axes();
+    // disable_all_ext_axes();
     gh->succeed(make_shared<Follow::Result>());
 }
 
@@ -668,10 +662,7 @@ void execute_single_arm_goal(const shared_ptr<GoalHandle> gh, rclcpp::Node::Shar
 }
 
 // ----- execute external axis: 4 joints -----
-void execute_ext_axis_goal(const shared_ptr<GoalHandle> gh,
-                           rclcpp::Node::SharedPtr node,
-                           double ext_vel,
-                           double ext_acc)
+void execute_ext_axis_goal(const shared_ptr<GoalHandle> gh, rclcpp::Node::SharedPtr node, double ext_vel, double ext_acc)
 {
     auto goal = gh->get_goal();
     const auto& traj = goal->trajectory;
@@ -760,7 +751,7 @@ void execute_ext_axis_goal(const shared_ptr<GoalHandle> gh,
 
         if (chrono::steady_clock::now() >= deadline) {
             stop_all_ext_axes();
-            disable_all_ext_axes();
+            // disable_all_ext_axes();
             RCLCPP_WARN(node->get_logger(),
                         "Timeout waiting for ext-axis target position");
             gh->abort(make_shared<Follow::Result>());
@@ -774,7 +765,7 @@ void execute_ext_axis_goal(const shared_ptr<GoalHandle> gh,
     }
 
     stop_all_ext_axes();
-    disable_all_ext_axes();
+    // disable_all_ext_axes();
     gh->succeed(make_shared<Follow::Result>());
 }
 
