@@ -63,6 +63,8 @@ static std::string make_edg_bcast(const std::string &ip)
     return ip.substr(0, last_oct + 1) + "255";
 }
 
+static double servo_period_sec = 0.002;
+
 // Guards
 static mutex g_arm_mtx[2];   // 0 = LEFT, 1 = RIGHT
 static mutex g_ext_mtx;      // external axis group
@@ -146,10 +148,10 @@ static IndexMapExt build_index_map_ext(const vector<string>& names)
 
 // ----- helpers -----
 
-static inline unsigned int steps_from_dt(double dt_sec, double servo_period = 0.001)
+static inline unsigned int steps_from_dt(double dt_sec)
 {
     if (dt_sec <= 0.0) return 1u;
-    const double s = dt_sec / servo_period;
+    const double s = dt_sec / servo_period_sec;
     unsigned int k = (unsigned int)llround(s);
     return k == 0 ? 1u : k;
 }
@@ -373,7 +375,7 @@ void execute_full_robot_goal(const shared_ptr<GoalHandle> gh, rclcpp::Node::Shar
         const double t = (double)pt.time_from_start.sec + 1e-9 * (double)pt.time_from_start.nanosec;
         const double dt = (i == 0) ? 0.0 : max(0.0, t - last_t);
         last_t = t;
-        const unsigned int step = steps_from_dt(dt, 0.001);
+        const unsigned int step = steps_from_dt(dt);
 
         int retL = robot.edg_servo_j(0u, &jl, MoveMode::ABS, step);
         int retR = robot.edg_servo_j(1u, &jr, MoveMode::ABS, step);
@@ -393,7 +395,7 @@ void execute_full_robot_goal(const shared_ptr<GoalHandle> gh, rclcpp::Node::Shar
             RCLCPP_WARN(node->get_logger(), "edg_send failed %d", send_ret);
         }
 
-        next_time += chrono::milliseconds(1);
+        next_time += chrono::milliseconds(static_cast<int>(servo_period_sec * 1000));
         this_thread::sleep_until(next_time);
     }
 
@@ -566,7 +568,7 @@ void execute_single_arm_goal(const shared_ptr<GoalHandle> gh, rclcpp::Node::Shar
         const double t = (double)pt.time_from_start.sec + 1e-9 * (double)pt.time_from_start.nanosec;
         const double dt = (i == 0) ? 0.0 : max(0.0, t - last_t);
         last_t = t;
-        const unsigned int step = steps_from_dt(dt, 0.001);
+        const unsigned int step = steps_from_dt(dt);
 
         int retArm, retOther;
         if (arm == 1) {
@@ -590,7 +592,7 @@ void execute_single_arm_goal(const shared_ptr<GoalHandle> gh, rclcpp::Node::Shar
             RCLCPP_WARN(node->get_logger(), "edg_send failed %d", send_ret);
         }
 
-        next_time += chrono::milliseconds(1);
+        next_time += chrono::milliseconds(static_cast<int>(servo_period_sec * 1000));
         this_thread::sleep_until(next_time);
     }
 
