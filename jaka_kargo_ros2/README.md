@@ -336,6 +336,21 @@ To support both RViz-only simulation and Isaac Sim integration, we modified the 
   ```bash
   find /opt/ros/humble/ -name launches.py
   ```
+- Backup the original:
+  ```bash
+  sudo cp /opt/ros/humble/lib/python3.10/site-packages/moveit_configs_utils/launches.py \
+        /opt/ros/humble/lib/python3.10/site-packages/moveit_configs_utils/launches.py.bak
+  ```
+- Replace it with the launches.py from our package:
+  ```bash
+  sudo cp ~/JAKA_KARGO/jaka_kargo_ros2/launches.py \
+        /opt/ros/humble/lib/python3.10/site-packages/moveit_configs_utils/launches.py
+  ```
+- Source environments:
+  ```bash
+  source /opt/ros/humble/setup.bash
+  source ~/JAKA_KARGO/jaka_kargo_ros2/install/setup.bash
+  ```
 
 ### 🚀 Launch Moveit Simulation Modes  
 

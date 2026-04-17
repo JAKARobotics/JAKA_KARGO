@@ -245,7 +245,7 @@ static array<double,4> extract_ext_target_sdk_units(
     return ext_target;
 }
 
-static bool send_ext_target_nonblocking(const array<double,4>& ext_target, double vel, double acc)
+static errno_t send_ext_target_nonblocking(const array<double,4>& ext_target, double vel, double acc)
 {
     MultiMovInfoList cmd{};
     cmd.count = 4;
@@ -262,8 +262,214 @@ static bool send_ext_target_nonblocking(const array<double,4>& ext_target, doubl
         cmd.info[i].movej_info.blend_tol = 0.0;
     }
 
-    errno_t ret = robot.multi_mov_with_ext(&cmd, false);
-    return ret == ERR_SUCC;
+    return robot.multi_mov_with_ext(&cmd, false);
+}
+
+static bool trajectory_has_full_velocities(const trajectory_msgs::msg::JointTrajectory& traj)
+{
+    if (traj.points.size() < 2) return false;
+
+    const size_t n = traj.joint_names.size();
+    for (const auto& pt : traj.points) {
+        if (pt.velocities.size() != n) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static double point_time_sec(const trajectory_msgs::msg::JointTrajectoryPoint& pt)
+{
+    return static_cast<double>(pt.time_from_start.sec) +
+           1e-9 * static_cast<double>(pt.time_from_start.nanosec);
+}
+
+static JointValue interpolate_single_arm_sample(
+    const trajectory_msgs::msg::JointTrajectory& traj,
+    const std::array<int,7>& mapSingle,
+    double t_sec,
+    size_t& seg_idx)
+{
+    JointValue out{};
+
+    const auto& pts = traj.points;
+    const size_t n = pts.size();
+
+    if (n == 0) {
+        return out;
+    }
+
+    if (n == 1 || t_sec <= point_time_sec(pts.front())) {
+        for (int j = 0; j < 7; ++j) {
+            out.jVal[j] = pts.front().positions[mapSingle[j]];
+        }
+        return out;
+    }
+
+    if (t_sec >= point_time_sec(pts.back())) {
+        for (int j = 0; j < 7; ++j) {
+            out.jVal[j] = pts.back().positions[mapSingle[j]];
+        }
+        return out;
+    }
+
+    while (seg_idx + 1 < n && point_time_sec(pts[seg_idx + 1]) < t_sec) {
+        ++seg_idx;
+    }
+
+    const auto& p0 = pts[seg_idx];
+    const auto& p1 = pts[seg_idx + 1];
+
+    const double t0 = point_time_sec(p0);
+    const double t1 = point_time_sec(p1);
+    const double h  = t1 - t0;
+
+    if (h <= 1e-12) {
+        for (int j = 0; j < 7; ++j) {
+            out.jVal[j] = p1.positions[mapSingle[j]];
+        }
+        return out;
+    }
+
+    const double s = (t_sec - t0) / h;
+
+    const bool have_vel =
+        (p0.velocities.size() == traj.joint_names.size()) &&
+        (p1.velocities.size() == traj.joint_names.size());
+
+    if (have_vel) {
+        // Cubic Hermite interpolation
+        const double h00 =  2.0*s*s*s - 3.0*s*s + 1.0;
+        const double h10 =      s*s*s - 2.0*s*s + s;
+        const double h01 = -2.0*s*s*s + 3.0*s*s;
+        const double h11 =      s*s*s -     s*s;
+
+        for (int j = 0; j < 7; ++j) {
+            const int idx = mapSingle[j];
+            const double q0 = p0.positions[idx];
+            const double q1 = p1.positions[idx];
+            const double v0 = p0.velocities[idx];
+            const double v1 = p1.velocities[idx];
+
+            out.jVal[j] = h00 * q0 + h10 * h * v0 + h01 * q1 + h11 * h * v1;
+        }
+    } else {
+        // Linear interpolation fallback
+        for (int j = 0; j < 7; ++j) {
+            const int idx = mapSingle[j];
+            const double q0 = p0.positions[idx];
+            const double q1 = p1.positions[idx];
+            out.jVal[j] = q0 + s * (q1 - q0);
+        }
+    }
+
+    return out;
+}
+
+struct FullArmSample
+{
+    JointValue jl{};
+    JointValue jr{};
+};
+
+static FullArmSample interpolate_full_robot_dual_arm_sample(
+    const trajectory_msgs::msg::JointTrajectory& traj,
+    const IndexMapFull& mapFull,
+    double t_sec,
+    size_t& seg_idx)
+{
+    FullArmSample out{};
+
+    const auto& pts = traj.points;
+    const size_t n = pts.size();
+
+    if (n == 0) {
+        return out;
+    }
+
+    if (n == 1 || t_sec <= point_time_sec(pts.front())) {
+        for (int j = 0; j < 7; ++j) {
+            out.jl.jVal[j] = pts.front().positions[mapFull.L[j]];
+            out.jr.jVal[j] = pts.front().positions[mapFull.R[j]];
+        }
+        return out;
+    }
+
+    if (t_sec >= point_time_sec(pts.back())) {
+        for (int j = 0; j < 7; ++j) {
+            out.jl.jVal[j] = pts.back().positions[mapFull.L[j]];
+            out.jr.jVal[j] = pts.back().positions[mapFull.R[j]];
+        }
+        return out;
+    }
+
+    while (seg_idx + 1 < n && point_time_sec(pts[seg_idx + 1]) < t_sec) {
+        ++seg_idx;
+    }
+
+    const auto& p0 = pts[seg_idx];
+    const auto& p1 = pts[seg_idx + 1];
+
+    const double t0 = point_time_sec(p0);
+    const double t1 = point_time_sec(p1);
+    const double h  = t1 - t0;
+
+    if (h <= 1e-12) {
+        for (int j = 0; j < 7; ++j) {
+            out.jl.jVal[j] = p1.positions[mapFull.L[j]];
+            out.jr.jVal[j] = p1.positions[mapFull.R[j]];
+        }
+        return out;
+    }
+
+    const double s = (t_sec - t0) / h;
+
+    const bool have_vel =
+        (p0.velocities.size() == traj.joint_names.size()) &&
+        (p1.velocities.size() == traj.joint_names.size());
+
+    if (have_vel) {
+        // Cubic Hermite interpolation
+        const double h00 =  2.0*s*s*s - 3.0*s*s + 1.0;
+        const double h10 =      s*s*s - 2.0*s*s + s;
+        const double h01 = -2.0*s*s*s + 3.0*s*s;
+        const double h11 =      s*s*s -     s*s;
+
+        for (int j = 0; j < 7; ++j) {
+            const int idxL = mapFull.L[j];
+            const int idxR = mapFull.R[j];
+
+            const double q0L = p0.positions[idxL];
+            const double q1L = p1.positions[idxL];
+            const double v0L = p0.velocities[idxL];
+            const double v1L = p1.velocities[idxL];
+
+            const double q0R = p0.positions[idxR];
+            const double q1R = p1.positions[idxR];
+            const double v0R = p0.velocities[idxR];
+            const double v1R = p1.velocities[idxR];
+
+            out.jl.jVal[j] = h00 * q0L + h10 * h * v0L + h01 * q1L + h11 * h * v1L;
+            out.jr.jVal[j] = h00 * q0R + h10 * h * v0R + h01 * q1R + h11 * h * v1R;
+        }
+    } else {
+        // Linear interpolation fallback
+        for (int j = 0; j < 7; ++j) {
+            const int idxL = mapFull.L[j];
+            const int idxR = mapFull.R[j];
+
+            const double q0L = p0.positions[idxL];
+            const double q1L = p1.positions[idxL];
+
+            const double q0R = p0.positions[idxR];
+            const double q1R = p1.positions[idxR];
+
+            out.jl.jVal[j] = q0L + s * (q1L - q0L);
+            out.jr.jVal[j] = q0R + s * (q1R - q0R);
+        }
+    }
+
+    return out;
 }
 
 // ----- execute full body: 18 joints -----
@@ -296,9 +502,6 @@ void execute_full_robot_goal(const shared_ptr<GoalHandle> gh, rclcpp::Node::Shar
     unique_lock<mutex> lk1(g_arm_mtx[1], adopt_lock);
     unique_lock<mutex> lkE(g_ext_mtx, adopt_lock);
 
-    robot.servo_move_use_none_filter(0);
-    robot.servo_move_use_none_filter(1);
-
     sched_param sch;
     sch.sched_priority = 90;
     pthread_setschedparam(pthread_self(), SCHED_FIFO, &sch);
@@ -323,18 +526,60 @@ void execute_full_robot_goal(const shared_ptr<GoalHandle> gh, rclcpp::Node::Shar
     if (last_pt.positions.size() != 18) {
         RCLCPP_ERROR(node->get_logger(), "Last point has %zu positions (need 18)", last_pt.positions.size());
         disable_arm_servos();
-        disable_all_ext_axes();
+        // disable_all_ext_axes();
         gh->abort(make_shared<Follow::Result>());
         return;
     }
 
+    // Start error check for both arms
+    JointValue fbL0{}, fbR0{};
+    robot.edg_get_stat(0, &fbL0, nullptr);
+    robot.edg_get_stat(1, &fbR0, nullptr);
+    const auto& first_pt = traj.points.front();
+    double max_start_err_l = 0.0;
+    double max_start_err_r = 0.0;
+    for (int j = 0; j < 7; ++j) {
+        max_start_err_l = max(max_start_err_l, abs(fbL0.jVal[j] - first_pt.positions[mapFull.L[j]]));
+        max_start_err_r = max(max_start_err_r, abs(fbR0.jVal[j] - first_pt.positions[mapFull.R[j]]));
+    }
+    if (max_start_err_l > 0.01 || max_start_err_r > 0.01) {
+        RCLCPP_ERROR(node->get_logger(), "Full-robot trajectory start too far from actual state, "
+                     "errL=%.6f rad, errR=%.6f rad", max_start_err_l, max_start_err_r);
+        disable_arm_servos();
+        // disable_all_ext_axes();
+        gh->abort(make_shared<Follow::Result>());
+        return;
+    }
+
+    const bool use_hermite = trajectory_has_full_velocities(traj);
+    RCLCPP_INFO(node->get_logger(),
+                "Full-robot trajectory points=%zu, joint_names=%zu, interpolation=%s",
+                traj.points.size(),
+                traj.joint_names.size(),
+                use_hermite ? "Hermite" : "Linear");
+
     // external axis final target (non-blocking, starts near the same time as arm motion)
     const auto ext_target = extract_ext_target_sdk_units(last_pt, mapFull.B);
 
-    if (!send_ext_target_nonblocking(ext_target, ext_vel, ext_acc)) {
-        RCLCPP_ERROR(node->get_logger(), "Failed to send ext-axis target");
+    for (int i = 0; i < 4; ++i) {
+        if (!std::isfinite(ext_target[i])) {
+            RCLCPP_ERROR(node->get_logger(), "Ext target[%d] is not finite", i);
+            disable_arm_servos();
+            // disable_all_ext_axes();
+            gh->abort(make_shared<Follow::Result>());
+            return;
+        }
+    }
+    RCLCPP_INFO(node->get_logger(),
+                "Ext target to send: j1=%.3f mm, j2=%.3f deg, j3=%.3f deg, j4=%.3f deg, vel=%.3f acc=%.3f",
+                ext_target[0], ext_target[1], ext_target[2], ext_target[3], ext_vel, ext_acc);
+
+    errno_t ext_ret = send_ext_target_nonblocking(ext_target, ext_vel, ext_acc);
+    if (ext_ret != ERR_SUCC) {
+        RCLCPP_ERROR(node->get_logger(),
+                    "Failed to send ext-axis target, sdk_ret=%d", ext_ret);
         disable_arm_servos();
-        disable_all_ext_axes();
+        // disable_all_ext_axes();
         gh->abort(make_shared<Follow::Result>());
         return;
     }
@@ -343,49 +588,57 @@ void execute_full_robot_goal(const shared_ptr<GoalHandle> gh, rclcpp::Node::Shar
                 "Ext target sent: %.3f mm, %.3f deg, %.3f deg, %.3f deg",
                 ext_target[0], ext_target[1], ext_target[2], ext_target[3]);
 
-    double last_t = 0.0;
-    auto next_time = chrono::steady_clock::now();
+    // Dense EDG streaming at 2 ms
+    const double total_t = point_time_sec(last_pt);
+    const unsigned int step = 1;
+    const size_t num_samples = static_cast<size_t>(std::ceil(total_t / servo_period_sec));
 
-    for (size_t i = 0; i < traj.points.size(); ++i)
-    {
-        if (gh->is_canceling()) {
-            robot.motion_abort();
-            stop_all_ext_axes();
-            disable_arm_servos();
-            disable_all_ext_axes();
-            gh->canceled(make_shared<Follow::Result>());
-            return;
-        }
+    auto start_time = std::chrono::steady_clock::now();
+    size_t seg_idx = 0;
 
+    for (size_t i = 0; i < traj.points.size(); ++i) {
         const auto& pt = traj.points[i];
         if (pt.positions.size() != 18) {
             RCLCPP_ERROR(node->get_logger(), "Point %zu has %zu positions (need 18)", i, pt.positions.size());
             robot.motion_abort();
             stop_all_ext_axes();
             disable_arm_servos();
-            disable_all_ext_axes();
+            // disable_all_ext_axes();
             gh->abort(make_shared<Follow::Result>());
             return;
         }
+    }
 
-        JointValue jl{}, jr{};
-        for (int j = 0; j < 7; ++j) jl.jVal[j] = pt.positions[ mapFull.L[j] ];
-        for (int j = 0; j < 7; ++j) jr.jVal[j] = pt.positions[ mapFull.R[j] ];
+    for (size_t k = 0; k <= num_samples; ++k)
+    {
+        if (gh->is_canceling()) {
+            robot.motion_abort();
+            stop_all_ext_axes();
+            disable_arm_servos();
+            // disable_all_ext_axes();
+            gh->canceled(make_shared<Follow::Result>());
+            return;
+        }
 
-        const double t = (double)pt.time_from_start.sec + 1e-9 * (double)pt.time_from_start.nanosec;
-        const double dt = (i == 0) ? 0.0 : max(0.0, t - last_t);
-        last_t = t;
-        const unsigned int step = steps_from_dt(dt);
+        double t = k * servo_period_sec;
+        if (t > total_t) {
+            t = total_t;
+        }
 
-        int retL = robot.edg_servo_j(0u, &jl, MoveMode::ABS, step);
-        int retR = robot.edg_servo_j(1u, &jr, MoveMode::ABS, step);
+        auto wake_time = start_time + chrono::duration_cast<chrono::steady_clock::duration>(chrono::duration<double>(t));
+        this_thread::sleep_until(wake_time);
+
+        FullArmSample sample = interpolate_full_robot_dual_arm_sample(traj, mapFull, t, seg_idx);
+
+        int retL = robot.edg_servo_j(0u, &sample.jl, MoveMode::ABS, step);
+        int retR = robot.edg_servo_j(1u, &sample.jr, MoveMode::ABS, step);
         if (retL != 0 || retR != 0) {
             RCLCPP_ERROR(node->get_logger(), "edg_servo_j failed: L=%s R=%s",
                          mapErr[retL].c_str(), mapErr[retR].c_str());
             robot.motion_abort();
             stop_all_ext_axes();
             disable_arm_servos();
-            disable_all_ext_axes();
+            // disable_all_ext_axes();
             gh->abort(make_shared<Follow::Result>());
             return;
         }
@@ -395,8 +648,10 @@ void execute_full_robot_goal(const shared_ptr<GoalHandle> gh, rclcpp::Node::Shar
             RCLCPP_WARN(node->get_logger(), "edg_send failed %d", send_ret);
         }
 
-        next_time += chrono::milliseconds(static_cast<int>(servo_period_sec * 1000));
-        this_thread::sleep_until(next_time);
+        // Debug
+        RCLCPP_INFO(node->get_logger(),
+                    "full dense sample k=%zu t=%.6f step=%u seg_idx=%zu",
+                    k, t, step, seg_idx);
     }
 
     JointValue jl_target{}, jr_target{};
@@ -425,7 +680,7 @@ void execute_full_robot_goal(const shared_ptr<GoalHandle> gh, rclcpp::Node::Shar
             robot.motion_abort();
             stop_all_ext_axes();
             disable_arm_servos();
-            disable_all_ext_axes();
+            // disable_all_ext_axes();
             gh->canceled(make_shared<Follow::Result>());
             return;
         }
@@ -439,7 +694,7 @@ void execute_full_robot_goal(const shared_ptr<GoalHandle> gh, rclcpp::Node::Shar
             robot.motion_abort();
             stop_all_ext_axes();
             disable_arm_servos();
-            disable_all_ext_axes();
+            // disable_all_ext_axes();
             gh->abort(make_shared<Follow::Result>());
             return;
         }
@@ -514,9 +769,6 @@ void execute_single_arm_goal(const shared_ptr<GoalHandle> gh, rclcpp::Node::Shar
     unique_lock<mutex> lk0(g_arm_mtx[0], adopt_lock);
     unique_lock<mutex> lk1(g_arm_mtx[1], adopt_lock);
 
-    robot.servo_move_use_none_filter(0);
-    robot.servo_move_use_none_filter(1);
-
     sched_param sch;
     sch.sched_priority = 90;
     pthread_setschedparam(pthread_self(), SCHED_FIFO, &sch);
@@ -542,48 +794,81 @@ void execute_single_arm_goal(const shared_ptr<GoalHandle> gh, rclcpp::Node::Shar
               other_hold.jVal[2] * 180.0 / M_PI, other_hold.jVal[3] * 180.0 / M_PI, 
             other_hold.jVal[4] * 180.0 / M_PI, other_hold.jVal[5] * 180.0 / M_PI, other_hold.jVal[6] * 180.0 / M_PI);
 
-    double last_t = 0.0;
-    auto next_time = chrono::steady_clock::now();
+    JointValue fbA{};
+    robot.edg_get_stat(arm, &fbA, nullptr);
+    const auto& first_pt = traj.points.front();
+    double max_start_err_a = 0.0;
+    for (int j = 0; j < 7; ++j) {
+        max_start_err_a = std::max(max_start_err_a, std::abs(fbA.jVal[j] - first_pt.positions[mapSingle[j]]));
+    }
+    if (max_start_err_a > 0.01) {
+        RCLCPP_ERROR(node->get_logger(),"Single-robot trajectory start too far from actual state, error: arm=%.6f rad", max_start_err_a);
+        disable_arm_servos();
+        gh->abort(make_shared<Follow::Result>());
+        return;
+    }
 
-    for (size_t i = 0; i < traj.points.size(); ++i)
+    const bool use_hermite = trajectory_has_full_velocities(traj);
+    RCLCPP_INFO(node->get_logger(),
+                "Trajectory points=%zu, joint_names=%zu, interpolation=%s",
+                traj.points.size(),
+                traj.joint_names.size(),
+                use_hermite ? "Hermite" : "Linear");
+
+    // double last_t = 0.0;
+    // auto next_time = chrono::steady_clock::now();
+    // auto start_time = std::chrono::steady_clock::now();
+
+    const double total_t = point_time_sec(traj.points.back());
+    const unsigned int step = 1;   // clean design: one EDG cycle per sample
+
+    auto start_time = std::chrono::steady_clock::now();
+    size_t seg_idx = 0;
+
+    // Number of dense samples at 2 ms spacing
+    const size_t num_samples =
+        static_cast<size_t>(std::ceil(total_t / servo_period_sec));
+
+    for (size_t k = 0; k <= num_samples; ++k)
     {
         if (gh->is_canceling()) {
             robot.motion_abort();
             disable_arm_servos();
-            gh->canceled(make_shared<Follow::Result>());
+            gh->canceled(std::make_shared<Follow::Result>());
             return;
         }
 
-        const auto& pt = traj.points[i];
-        if (pt.positions.size() != 7) {
-            RCLCPP_ERROR(node->get_logger(), "Point %zu has %zu positions (need 7)", i, pt.positions.size());
-            disable_arm_servos();
-            gh->abort(make_shared<Follow::Result>());
-            return;
+        double t = k * servo_period_sec;
+        if (t > total_t) {
+            t = total_t;
         }
 
-        JointValue j{};
-        for (int k = 0; k < 7; k++) j.jVal[k] = pt.positions[ mapSingle[k] ];
+        // Sleep until this sample's absolute execution time
+        auto wake_time =
+            start_time +
+            std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                std::chrono::duration<double>(t));
 
-        const double t = (double)pt.time_from_start.sec + 1e-9 * (double)pt.time_from_start.nanosec;
-        const double dt = (i == 0) ? 0.0 : max(0.0, t - last_t);
-        last_t = t;
-        const unsigned int step = steps_from_dt(dt);
+        std::this_thread::sleep_until(wake_time);
+
+        JointValue j = interpolate_single_arm_sample(traj, mapSingle, t, seg_idx);
 
         int retArm, retOther;
         if (arm == 1) {
             retOther = robot.edg_servo_j(0, &other_hold, MoveMode::ABS, step);
-            retArm   = robot.edg_servo_j(1, &j, MoveMode::ABS, step);
+            retArm   = robot.edg_servo_j(1, &j,        MoveMode::ABS, step);
         } else {
-            retArm   = robot.edg_servo_j(0, &j, MoveMode::ABS, step);
+            retArm   = robot.edg_servo_j(0, &j,        MoveMode::ABS, step);
             retOther = robot.edg_servo_j(1, &other_hold, MoveMode::ABS, step);
         }
 
         if (retArm != 0 || retOther != 0) {
-            RCLCPP_ERROR(node->get_logger(), "edg_servo_j failed: arm=%s other=%s",
-                         mapErr[retArm].c_str(), mapErr[retOther].c_str());
+            RCLCPP_ERROR(node->get_logger(),
+                        "edg_servo_j failed: arm=%s other=%s",
+                        mapErr[retArm].c_str(),
+                        mapErr[retOther].c_str());
             disable_arm_servos();
-            gh->abort(make_shared<Follow::Result>());
+            gh->abort(std::make_shared<Follow::Result>());
             return;
         }
 
@@ -592,8 +877,10 @@ void execute_single_arm_goal(const shared_ptr<GoalHandle> gh, rclcpp::Node::Shar
             RCLCPP_WARN(node->get_logger(), "edg_send failed %d", send_ret);
         }
 
-        next_time += chrono::milliseconds(static_cast<int>(servo_period_sec * 1000));
-        this_thread::sleep_until(next_time);
+        // Debug
+        RCLCPP_INFO(node->get_logger(),
+                    "dense sample k=%zu t=%.6f step=%u, seg_idx=%zu",
+                    k, t, step, seg_idx);
     }
 
     JointValue j_target{}, other_target{};
@@ -654,7 +941,7 @@ void execute_single_arm_goal(const shared_ptr<GoalHandle> gh, rclcpp::Node::Shar
         }
 
         RCLCPP_INFO(node->get_logger(), 
-              "Whether the robot has reached the target position: %d", (reached));
+              "Whether the robot has reached the target position: %d, errorArm: %.3f", reached, errArm);
 
         rclcpp::sleep_for(chrono::milliseconds(100));
     }
@@ -703,7 +990,7 @@ void execute_ext_axis_goal(const shared_ptr<GoalHandle> gh, rclcpp::Node::Shared
     const auto& last_pt = traj.points.back();
     if (last_pt.positions.size() != 4) { 
         RCLCPP_ERROR(node->get_logger(), "Last point has %zu positions (need 4)", last_pt.positions.size()); 
-        disable_all_ext_axes(); 
+        // disable_all_ext_axes(); 
         gh->abort(make_shared<Follow::Result>()); 
         return; 
     }
@@ -712,7 +999,7 @@ void execute_ext_axis_goal(const shared_ptr<GoalHandle> gh, rclcpp::Node::Shared
 
     if (!send_ext_target_nonblocking(ext_target, ext_vel, ext_acc)) {
         RCLCPP_ERROR(node->get_logger(), "Failed to send ext-axis target");
-        disable_all_ext_axes();
+        // disable_all_ext_axes();
         gh->abort(make_shared<Follow::Result>());
         return;
     }
@@ -737,7 +1024,7 @@ void execute_ext_axis_goal(const shared_ptr<GoalHandle> gh, rclcpp::Node::Shared
     while (rclcpp::ok()) {
         if (gh->is_canceling()) {
             stop_all_ext_axes();
-            disable_all_ext_axes();
+            // disable_all_ext_axes();
             gh->canceled(make_shared<Follow::Result>());
             return;
         }
@@ -829,10 +1116,16 @@ int main(int argc, char** argv)
     edg_init_ip = make_edg_bcast(robot_ip);
     RCLCPP_INFO(node->get_logger(), "EDG init IP set to: %s", edg_init_ip.c_str());
 
-    double ext_vel = node->declare_parameter("ext_vel", 80.0);
-    double ext_acc = node->declare_parameter("ext_acc", 80.0);
+    double ext_vel = node->declare_parameter("ext_vel", 50.0);
+    double ext_acc = node->declare_parameter("ext_acc", 50.0);
 
-    robot.login_in(robot_ip.c_str());
+    // Connect
+    int ret = robot.login_in(robot_ip.c_str());
+    if (ret != 0) 
+    { 
+        RCLCPP_FATAL(node->get_logger(), "login_in failed: %s", mapErr[ret].c_str()); 
+        return -1; 
+    }
     rclcpp::Rate rate(125);
 
     // ensure arms are out of servo mode at startup
@@ -842,10 +1135,22 @@ int main(int argc, char** argv)
 
     robot.servo_move_use_joint_LPF(0.5, -1);
 
-    robot.power_on();
-    rclcpp::sleep_for(chrono::seconds(8));
-    robot.enable_robot();
-    rclcpp::sleep_for(chrono::seconds(4));
+    // Power on
+    ret = robot.power_on();
+    if (ret != 0) 
+    { 
+        RCLCPP_FATAL(node->get_logger(), "power_on failed: %s", mapErr[ret].c_str()); 
+        return -1; 
+    }
+    rclcpp::sleep_for(chrono::seconds(10));
+
+    ret = robot.enable_robot();
+    if (ret != 0)
+     { 
+        RCLCPP_FATAL(node->get_logger(), "enable_robot failed: %s", mapErr[ret].c_str()); 
+        return -1; 
+    }
+    rclcpp::sleep_for(chrono::seconds(5));
 
     robot.edg_init(1, edg_init_ip.c_str());
 
@@ -864,8 +1169,10 @@ int main(int argc, char** argv)
             return rclcpp_action::CancelResponse::ACCEPT;
         },
         [node, ext_vel, ext_acc](shared_ptr<GoalHandle> gh) {
-            RCLCPP_INFO(rclcpp::get_logger("kargo_moveit_server"), "Executing full_robot goal");
-            execute_full_robot_goal(gh, node, ext_vel, ext_acc);
+            std::thread([node, gh, ext_vel, ext_acc]() {
+                RCLCPP_INFO(rclcpp::get_logger("kargo_moveit_server"), "Executing full_robot goal");
+                execute_full_robot_goal(gh, node, ext_vel, ext_acc);
+            }).detach();
         }
     );
 
@@ -882,8 +1189,10 @@ int main(int argc, char** argv)
             return rclcpp_action::CancelResponse::ACCEPT;
         },
         [node](shared_ptr<GoalHandle> gh) {
-            RCLCPP_INFO(rclcpp::get_logger("kargo_moveit_server"), "Executing arm_l goal");
-            execute_single_arm_goal(gh, node, 0);
+            std::thread([node, gh]() {
+                RCLCPP_INFO(rclcpp::get_logger("kargo_moveit_server"), "Executing arm_l goal");
+                execute_single_arm_goal(gh, node, 0);
+            }).detach();
         }
     );
 
@@ -900,11 +1209,12 @@ int main(int argc, char** argv)
             return rclcpp_action::CancelResponse::ACCEPT;
         },
         [node](shared_ptr<GoalHandle> gh) {
-            RCLCPP_INFO(rclcpp::get_logger("kargo_moveit_server"), "Executing arm_r goal");
-            execute_single_arm_goal(gh, node, 1);
+            std::thread([node, gh]() {
+                RCLCPP_INFO(rclcpp::get_logger("kargo_moveit_server"), "Executing arm_r goal");
+                execute_single_arm_goal(gh, node, 1);
+            }).detach();
         }
     );
-
     // ext-axis only server: 4 joints
     auto ext_axis_server = rclcpp_action::create_server<Follow>(
         node,
@@ -918,8 +1228,10 @@ int main(int argc, char** argv)
             return rclcpp_action::CancelResponse::ACCEPT;
         },
         [node, ext_vel, ext_acc](shared_ptr<GoalHandle> gh) {
-            RCLCPP_INFO(rclcpp::get_logger("kargo_moveit_server"), "Executing ext_axis goal");
-            execute_ext_axis_goal(gh, node, ext_vel, ext_acc);
+            std::thread([node, gh, ext_vel, ext_acc]() {
+                RCLCPP_INFO(rclcpp::get_logger("kargo_moveit_server"), "Executing ext_axis goal");
+                execute_ext_axis_goal(gh, node, ext_vel, ext_acc);
+            }).detach();
         }
     );
 
@@ -935,7 +1247,7 @@ int main(int argc, char** argv)
     // cleanup on shutdown
     disable_arm_servos();
     stop_all_ext_axes();
-    disable_all_ext_axes();
+    // disable_all_ext_axes();
     robot.login_out();
 
     rclcpp::shutdown();
