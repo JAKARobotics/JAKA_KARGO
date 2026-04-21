@@ -1,0 +1,7 @@
+# Motion execution control
+# 1: pause, 2: resume, 3: stop
+uint8 motion_state_code
+
+---
+int32 ret_code
+string ret_msg

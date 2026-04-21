@@ -13,7 +13,8 @@ install(DIRECTORY
 install(PROGRAMS
   scripts/run_isaacsim.py
   scripts/open_isaacsim_stage.py
-  # scripts/isaacsim_moveit.py
+  scripts/isaacsim_moveit.py
+  scripts/python.sh
   DESTINATION lib/${PROJECT_NAME}
 )
 ament_package()

@@ -17,7 +17,7 @@ def generate_launch_description():
         DeclareLaunchArgument('usd_rel', default_value='urdf/jaka_kargo/jaka_kargo_moveit.usd'),
         ExecuteProcess(
             cmd=[
-                python_sh, 'isaacsim_moveit.py'  
+                '/bin/bash', python_sh, 'isaacsim_moveit.py'  
             ],
             additional_env={'KARGO_USD_PATH': usd_abs},
             output='screen',

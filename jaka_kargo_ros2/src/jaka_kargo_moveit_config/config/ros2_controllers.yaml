@@ -3,15 +3,19 @@ controller_manager:
   ros__parameters:
     update_rate: 1000  # Hz
 
-    jaka_kargo_body_controller:
-      type: joint_trajectory_controller/JointTrajectoryController
-
-
     jaka_kargo_arm_l_controller:
       type: joint_trajectory_controller/JointTrajectoryController
 
 
     jaka_kargo_arm_r_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+
+    jaka_kargo_body_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+
+    jaka_kargo_agv_controller:
       type: joint_trajectory_controller/JointTrajectoryController
 
 
@@ -22,18 +26,6 @@ controller_manager:
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster
 
-jaka_kargo_body_controller:
-  ros__parameters:
-    joints:
-      - body_j1
-      - body_j2
-      - body_j3
-      - body_j4
-    command_interfaces:
-      - position
-    state_interfaces:
-      - position
-      - velocity
 jaka_kargo_arm_l_controller:
   ros__parameters:
     joints:
@@ -64,13 +56,32 @@ jaka_kargo_arm_r_controller:
     state_interfaces:
       - position
       - velocity
-jaka_kargo_full_robot_controller:
+jaka_kargo_body_controller:
   ros__parameters:
     joints:
       - body_j1
       - body_j2
       - body_j3
       - body_j4
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+jaka_kargo_agv_controller:
+  ros__parameters:
+    joints:
+      - agv_x
+      - agv_y
+      - agv_yaw
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+jaka_kargo_full_robot_controller:
+  ros__parameters:
+    joints:
       - arm_lj1
       - arm_lj2
       - arm_lj3
@@ -85,6 +96,13 @@ jaka_kargo_full_robot_controller:
       - arm_rj5
       - arm_rj6
       - arm_rj7
+      - body_j1
+      - body_j2
+      - body_j3
+      - body_j4
+      - agv_x
+      - agv_y
+      - agv_yaw
     command_interfaces:
       - position
     state_interfaces:

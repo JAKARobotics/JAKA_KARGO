@@ -1,0 +1,7 @@
+string command # "open_loc_update", "close_loc_update"
+bool update_flag # true: update the loc state, false: cancel the update
+bool map_flag # true: loc with a map, false: loc without a map
+---
+int32 ret_code
+string ret_msg
+string command

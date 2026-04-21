@@ -1,0 +1,7 @@
+string command # "start_loc", "stop_loc"
+bool map_flag
+string map_name # "map_name", ""
+---
+int32 ret_code
+string ret_msg
+string command

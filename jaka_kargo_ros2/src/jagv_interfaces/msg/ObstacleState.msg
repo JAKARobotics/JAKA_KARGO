@@ -1,0 +1,4 @@
+string sensor_source
+bool has_obstacle
+float64 distance
+geometry_msgs/Point position

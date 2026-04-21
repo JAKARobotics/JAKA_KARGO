@@ -1,0 +1,6 @@
+string command
+string map_name
+---
+int32 ret_code
+string ret_msg
+string command

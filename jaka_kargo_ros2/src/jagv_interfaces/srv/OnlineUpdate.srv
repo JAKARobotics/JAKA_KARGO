@@ -1,0 +1,5 @@
+string command
+---
+int32 ret_code
+string ret_msg
+string command

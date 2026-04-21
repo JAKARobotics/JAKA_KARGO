@@ -411,7 +411,7 @@ Activate the full-robot controller (disable subgroup controllers):
 ```bash
 ros2 control switch_controllers \
   --activate jaka_kargo_full_robot_controller \
-  --deactivate jaka_kargo_arm_l_controller jaka_kargo_arm_r_controller jaka_kargo_body_controller \
+  --deactivate jaka_kargo_arm_l_controller jaka_kargo_arm_r_controller jaka_kargo_body_controller jaka_kargo_agv_controller \
   --strict
 ```
 
@@ -419,7 +419,7 @@ Revert to left-arm + right-arm + body controllers:
 
 ```bash
 ros2 control switch_controllers \
-  --activate jaka_kargo_arm_l_controller jaka_kargo_arm_r_controller jaka_kargo_body_controller \
+  --activate jaka_kargo_arm_l_controller jaka_kargo_arm_r_controller jaka_kargo_body_controller jaka_kargo_agv_controller \
   --deactivate jaka_kargo_full_robot_controller \
   --strict
 ```

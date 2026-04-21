@@ -4,20 +4,12 @@ moveit_controller_manager: moveit_simple_controller_manager/MoveItSimpleControll
 
 moveit_simple_controller_manager:
   controller_names:
-    - jaka_kargo_body_controller
     - jaka_kargo_arm_l_controller
     - jaka_kargo_arm_r_controller
+    - jaka_kargo_body_controller
+    - jaka_kargo_agv_controller
     - jaka_kargo_full_robot_controller
 
-  jaka_kargo_body_controller:
-    type: FollowJointTrajectory
-    action_ns: follow_joint_trajectory
-    default: true
-    joints:
-      - body_j1
-      - body_j2
-      - body_j3
-      - body_j4
   jaka_kargo_arm_l_controller:
     type: FollowJointTrajectory
     action_ns: follow_joint_trajectory
@@ -42,7 +34,7 @@ moveit_simple_controller_manager:
       - arm_rj5
       - arm_rj6
       - arm_rj7
-  jaka_kargo_full_robot_controller:
+  jaka_kargo_body_controller:
     type: FollowJointTrajectory
     action_ns: follow_joint_trajectory
     default: true
@@ -51,6 +43,19 @@ moveit_simple_controller_manager:
       - body_j2
       - body_j3
       - body_j4
+  jaka_kargo_agv_controller:
+    type: FollowJointTrajectory
+    action_ns: follow_joint_trajectory
+    default: true
+    joints:
+      - agv_x
+      - agv_y
+      - agv_yaw
+  jaka_kargo_full_robot_controller:
+    type: FollowJointTrajectory
+    action_ns: follow_joint_trajectory
+    default: true
+    joints:
       - arm_lj1
       - arm_lj2
       - arm_lj3
@@ -65,6 +70,13 @@ moveit_simple_controller_manager:
       - arm_rj5
       - arm_rj6
       - arm_rj7
+      - body_j1
+      - body_j2
+      - body_j3
+      - body_j4
+      - agv_x
+      - agv_y
+      - agv_yaw
 
 trajectory_execution:
   allowed_execution_duration_scaling: 1.5     # or 2.0, to allow 50-100% extra time

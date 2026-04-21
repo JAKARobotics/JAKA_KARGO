@@ -22,6 +22,8 @@ find_package(control_msgs REQUIRED)
 find_package(moveit_ros_planning_interface REQUIRED)
 find_package(moveit_visual_tools REQUIRED)
 find_package(moveit_core REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(jagv_interfaces REQUIRED)
 
 # Declare executable targets
 add_executable(kargo_moveit_server src/kargo_moveit_server.cpp)
@@ -37,6 +39,8 @@ ament_target_dependencies(kargo_moveit_server
   action_msgs
   control_msgs
   moveit_ros_planning_interface
+  nav_msgs
+  jagv_interfaces
 )
 
 # For including directories in ROS 2

@@ -1,0 +1,10 @@
+float64 time_stamp
+int8 process_type
+geometry_msgs/Pose2D odom_pose
+geometry_msgs/Pose2D lidar_pose
+bool valid_odom_pose
+bool valid_lidar_pose
+float64 response
+float64 add_scans_time
+float64 correlate_time
+bool localization_lost

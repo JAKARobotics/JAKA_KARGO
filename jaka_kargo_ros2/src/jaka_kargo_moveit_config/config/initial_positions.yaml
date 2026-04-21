@@ -19,3 +19,6 @@ initial_positions:
   body_j2: 0
   body_j3: 0
   body_j4: 0
+  agv_x: 0
+  agv_y: 0
+  agv_yaw: 0
