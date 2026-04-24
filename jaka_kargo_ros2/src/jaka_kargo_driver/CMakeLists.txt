@@ -20,7 +20,8 @@ find_package(sensor_msgs REQUIRED)
 find_package(jaka_kargo_msgs REQUIRED)
 find_package(action_msgs REQUIRED)
 find_package(control_msgs REQUIRED)
-
+find_package(nav_msgs REQUIRED)
+find_package(jagv_interfaces REQUIRED)
 
 # Declare ROS 2 message and service dependencies
 find_package(rosidl_default_generators REQUIRED)
@@ -38,6 +39,8 @@ ament_target_dependencies(jaka_kargo_driver
   jaka_kargo_msgs
   action_msgs
   control_msgs
+  nav_msgs
+  jagv_interfaces
 )
 
 # For including directories in ROS 2

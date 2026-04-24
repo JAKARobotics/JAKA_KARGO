@@ -2,6 +2,9 @@
 #include "std_srvs/srv/empty.hpp"
 #include "geometry_msgs/msg/twist_stamped.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
+#include "nav_msgs/msg/odometry.hpp"
+#include "geometry_msgs/msg/twist.hpp"
+#include "geometry_msgs/msg/pose2_d.hpp"
 
 #include "jaka_kargo_msgs/msg/robot_states.hpp"
 #include "jaka_kargo_msgs/msg/di_info.hpp"
@@ -26,7 +29,11 @@
 #include "jaka_kargo_msgs/srv/ext_enable.hpp"
 #include "jaka_kargo_msgs/srv/jog_ext.hpp"
 #include "jaka_kargo_msgs/srv/multi_move_ext.hpp"
-// #include "jaka_kargo_msgs/srv/get_ext_status.hpp"
+#include "jaka_kargo_msgs/srv/agv_cmd_vel.hpp"
+
+#include "jagv_interfaces/srv/auto_move.hpp"
+#include "jagv_interfaces/srv/motion_state_control.hpp"
+#include "jagv_interfaces/msg/motion_state.hpp"
 
 #include "jaka_kargo_driver/JAKAZuRobot.h"
 #include "jaka_kargo_driver/jkerr.h"
@@ -65,10 +72,81 @@ map<int, string>mapErr = {
 };
 
 
-// Declare publishers
+// Declare publishers, subscribers & service clients
 rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr tool_position_pub;
 rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_position_pub;
 rclcpp::Publisher<jaka_kargo_msgs::msg::RobotStates>::SharedPtr robot_states_pub;
+rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr agv_cmd_vel_pub;
+rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr agv_odom_sub;
+rclcpp::Subscription<jagv_interfaces::msg::MotionState>::SharedPtr agv_motion_state_sub;
+rclcpp::Client<jagv_interfaces::srv::AutoMove>::SharedPtr agv_auto_move_client;
+rclcpp::Client<jagv_interfaces::srv::MotionStateControl>::SharedPtr agv_motion_ctrl_client;
+
+struct AgvOdomState
+{
+    bool valid{false};
+    double x{0.0};
+    double y{0.0};
+    double yaw{0.0};
+};
+
+struct AgvMotionState
+{
+    bool valid{false};
+    uint8_t state_id{255};
+    std::array<uint8_t,4> drive_state{{0,0,0,0}};
+    std::array<uint16_t,4> drive_error_code{{0,0,0,0}};
+    uint32_t wheel_states{0};
+};
+
+
+static std::mutex g_agv_odom_mtx;
+static AgvOdomState g_agv_odom;
+
+static std::mutex g_agv_motion_state_mtx;
+static AgvMotionState g_agv_motion_state;
+
+static double yaw_from_quat(double x, double y, double z, double w)
+{
+    const double siny_cosp = 2.0 * (w * z + x * y);
+    const double cosy_cosp = 1.0 - 2.0 * (y * y + z * z);
+    return std::atan2(siny_cosp, cosy_cosp);
+}
+
+static void agv_odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg)
+{
+    std::lock_guard<std::mutex> lk(g_agv_odom_mtx);
+    g_agv_odom.valid = true;
+    g_agv_odom.x = msg->pose.pose.position.x;
+    g_agv_odom.y = msg->pose.pose.position.y;
+    g_agv_odom.yaw = yaw_from_quat(
+        msg->pose.pose.orientation.x,
+        msg->pose.pose.orientation.y,
+        msg->pose.pose.orientation.z,
+        msg->pose.pose.orientation.w);
+}
+
+static bool get_latest_agv_pose(double &x, double &y, double &yaw)
+{
+    std::lock_guard<std::mutex> lk(g_agv_odom_mtx);
+    if (!g_agv_odom.valid) return false;
+    x = g_agv_odom.x;
+    y = g_agv_odom.y;
+    yaw = g_agv_odom.yaw;
+    return true;
+}
+
+static void agv_motion_state_callback(const jagv_interfaces::msg::MotionState::SharedPtr msg)
+{
+    std::lock_guard<std::mutex> lk(g_agv_motion_state_mtx);
+    g_agv_motion_state.valid = true;
+    g_agv_motion_state.state_id = msg->state_id;
+    for (size_t i = 0; i < 4; ++i) {
+        g_agv_motion_state.drive_state[i] = msg->drive_state[i];
+        g_agv_motion_state.drive_error_code[i] = msg->drive_error_code[i];
+    }
+    g_agv_motion_state.wheel_states = msg->wheel_states;
+}
 
 // Global EDG broadcast IP used by edg_init calls
 static std::string edg_init_ip = "255.255.255.255";
@@ -381,8 +459,7 @@ bool edg_servo_p_callback(
     // MoveMode mode = (req->move_mode == 1) ? MoveMode::INCR : MoveMode::ABS;
 
     // // step_num: default to 1 if 0 comes in
-    // unsigned int step = (req->step_num == 0u) ? 1u
-    //                                             : static_cast<unsigned int>(req->step_num);
+    // unsigned int step = (req->step_num == 0u) ? 1u : static_cast<unsigned int>(req->step_num);
 
     // Log what we're about to send (positions in mm, rpy both rad & deg)
     {
@@ -403,8 +480,7 @@ bool edg_servo_p_callback(
     pthread_setschedparam(pthread_self(), SCHED_FIFO, &sch);
 
     // Call EDG servo_p 
-    const int ret = robot.edg_servo_p(
-        static_cast<unsigned char>(req->robot_index), &cp, MoveMode::INCR);
+    const int ret = robot.edg_servo_p(static_cast<unsigned char>(req->robot_index), &cp, MoveMode::INCR);
     if (ret != 0) {
         res->ret = 0;
         res->message = string("error occurred: ") + mapErr[ret];
@@ -1213,53 +1289,157 @@ bool multi_move_ext_callback(
 }
 
 
-// bool get_ext_status_callback(
-//     const shared_ptr<jaka_kargo_msgs::srv::GetExtStatus::Request> req,
-//     shared_ptr<jaka_kargo_msgs::srv::GetExtStatus::Response> res)
-// {
-//     if (req->ext_id < -1 || req->ext_id > 3) {
-//         res->ret = -1;
-//         res->message = "ext_id must be -1 or 0..3";
-//         return false;
-//     }
+bool agv_auto_move_callback(
+    const std::shared_ptr<jagv_interfaces::srv::AutoMove::Request> req,
+    std::shared_ptr<jagv_interfaces::srv::AutoMove::Response> res)
+{
+    if (!agv_auto_move_client) {
+        res->ret_code = -1;
+        res->ret_msg = "AGV auto_move client not initialized";
+        return false;
+    }
 
-//     ExtAxisStatusList status_list{};
-//     const int ret = robot.get_ext_status(&status_list, req->ext_id);
+    if (!agv_auto_move_client->wait_for_service(std::chrono::seconds(2))) {
+        res->ret_code = -1;
+        res->ret_msg = "AGV auto_move service not available";
+        return false;
+    }
 
-//     if (ret != 0) {
-//         res->ret = 0;
-//         res->message = string("error occurred: ") + mapErr[ret];
-//         res->count = 0;
-//         return false;
-//     }
+    auto forward_req = std::make_shared<jagv_interfaces::srv::AutoMove::Request>();
+    *forward_req = *req;
 
-//     res->ret = 1;
-//     res->message = "get_ext_status executed";
-//     res->count = status_list.count;
+    auto future = agv_auto_move_client->async_send_request(forward_req);
 
-//     res->is_powered.clear();
-//     res->is_powering.clear();
-//     res->is_enabled.clear();
-//     res->is_enabling.clear();
-//     res->is_inpos.clear();
-//     res->is_on_limit.clear();
-//     res->pos_cmd.clear();
-//     res->pos_fdb.clear();
+    if (future.wait_for(std::chrono::seconds(10)) != std::future_status::ready) {
+        res->ret_code = -1;
+        res->ret_msg = "Timeout waiting for AGV auto_move response";
+        return false;
+    }
 
-//     for (int i = 0; i < status_list.count; ++i) {
-//         res->is_powered.push_back(status_list.status[i].is_powered);
-//         res->is_powering.push_back(status_list.status[i].is_powering);
-//         res->is_enabled.push_back(status_list.status[i].is_enabled);
-//         res->is_enabling.push_back(status_list.status[i].is_enabling);
-//         res->is_inpos.push_back(status_list.status[i].is_inpos);
-//         res->is_on_limit.push_back(status_list.status[i].is_on_limit);
-//         res->pos_cmd.push_back(status_list.status[i].pos_cmd);
-//         res->pos_fdb.push_back(status_list.status[i].pos_fdb);
-//     }
+    auto agv_res = future.get();
+    if (!agv_res) {
+        res->ret_code = -1;
+        res->ret_msg = "Null response from AGV auto_move";
+        return false;
+    }
 
-//     return true;
-// }
+    *res = *agv_res;
+    if (res->ret_code == 0){
+        RCLCPP_INFO(rclcpp::get_logger("agv_auto_move_callback"), "agv_auto_move executed");
+        return true;
+    } else {
+        RCLCPP_ERROR(rclcpp::get_logger("agv_auto_move_callback"),
+                 "agv_auto_move failed: ret_code=%d, ret_msg=%s",
+                 res->ret_code, res->ret_msg.c_str());
+        return false;
+    }
+}
 
+
+bool agv_motion_state_control_callback(
+    const std::shared_ptr<jagv_interfaces::srv::MotionStateControl::Request> req,
+    std::shared_ptr<jagv_interfaces::srv::MotionStateControl::Response> res)
+{
+    if (!agv_motion_ctrl_client) {
+        res->ret_code = -1;
+        res->ret_msg = "AGV motion_state_control client not initialized";
+        return false;
+    }
+
+    if (!agv_motion_ctrl_client->wait_for_service(std::chrono::seconds(2))) {
+        res->ret_code = -1;
+        res->ret_msg = "AGV motion_state_control service not available";
+        return false;
+    }
+
+    auto forward_req = std::make_shared<jagv_interfaces::srv::MotionStateControl::Request>();
+    *forward_req = *req;
+
+    auto future = agv_motion_ctrl_client->async_send_request(forward_req);
+
+    if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
+        res->ret_code = -1;
+        res->ret_msg = "Timeout waiting for AGV motion_state_control response";
+        return false;
+    }
+
+    auto agv_res = future.get();
+    if (!agv_res) {
+        res->ret_code = -1;
+        res->ret_msg = "Null response from AGV motion_state_control";
+        return false;
+    }
+
+    *res = *agv_res;
+    if (res->ret_code == 0){
+        RCLCPP_INFO(rclcpp::get_logger("agv_motion_state_control_callback"), "agv_motion_state_control executed");
+        return true;
+    } else {
+        RCLCPP_ERROR(rclcpp::get_logger("agv_motion_state_control_callback"),
+                 "agv_motion_state_control failed: ret_code=%d, ret_msg=%s",
+                 res->ret_code, res->ret_msg.c_str());
+        return false;
+    }
+}
+
+
+bool agv_cmd_vel_callback(
+    const std::shared_ptr<jaka_kargo_msgs::srv::AgvCmdVel::Request> req,
+    std::shared_ptr<jaka_kargo_msgs::srv::AgvCmdVel::Response> res)
+{
+    if (!agv_cmd_vel_pub) {
+        res->ret = -1;
+        res->message = "AGV cmd_vel publisher not initialized";
+        return false;
+    }
+
+    if (req->publish_rate <= 10.0) {
+        res->ret = -1;
+        res->message = "publish_rate must be > 10 Hz";
+        return false;
+    }
+
+    if ((req->linear_x != 0.0 || req->linear_y != 0.0) && req->angular_z != 0.0) {
+        RCLCPP_INFO(rclcpp::get_logger("agv_cmd_vel_callback"), 
+        "AGV does not support simultaneous translation and rotation. \n" 
+        "If both translation and rotation values are provided it will prioritize rotation. \n"
+        "To translate only set angular_z to 0."); 
+    }
+
+    geometry_msgs::msg::Twist cmd;
+    cmd.linear.x  = req->linear_x;
+    cmd.linear.y  = req->linear_y;
+    cmd.linear.z  = 0.0;
+    cmd.angular.x = 0.0;
+    cmd.angular.y = 0.0;
+    cmd.angular.z = req->angular_z;
+
+    if (req->duration <= 0.0) {
+        agv_cmd_vel_pub->publish(cmd);
+        res->ret = 1;
+        res->message = "Published one cmd_vel message";
+        return true;
+    }
+
+    rclcpp::WallRate rate(req->publish_rate);
+    const auto t_end = std::chrono::steady_clock::now() +
+                       std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                           std::chrono::duration<double>(req->duration));
+
+    while (rclcpp::ok() && std::chrono::steady_clock::now() < t_end) {
+        agv_cmd_vel_pub->publish(cmd);
+        rate.sleep();
+    }
+
+    if (req->stop_after) {
+        geometry_msgs::msg::Twist stop_cmd{};
+        agv_cmd_vel_pub->publish(stop_cmd);
+    }
+
+    res->ret = 1;
+    res->message = "Published cmd_vel stream";
+    return true;
+}
 
 // TCP pose via EDG (per arm). Publishes position (mm) + RPY (deg in angular fields).
 void tool_position_callback(
@@ -1308,6 +1488,9 @@ void joint_position_callback(
     }
 
     sensor_msgs::msg::JointState joint_position;
+    joint_position.position.reserve(21);
+    joint_position.name.reserve(21);
+
     JointValue joint_pos{};
 
     // Arms
@@ -1320,9 +1503,9 @@ void joint_position_callback(
         }
 
         const char* prefix = (robot_index == 0) ? "left_joint_" : "right_joint_";
-        for (int i = 0; i < 7; ++i) {                        
+        for (int i = 0; i < 7; ++i) {   
+            joint_position.name.push_back(string(prefix) + to_string(i+1));                     
             joint_position.position.push_back(joint_pos.jVal[i]);               // radians
-            joint_position.name.push_back(string(prefix) + to_string(i+1));
         }
     }
 
@@ -1348,6 +1531,22 @@ void joint_position_callback(
             }
         }
     }
+
+    // AGV pose from odom
+    double agv_x = std::numeric_limits<double>::quiet_NaN();
+    double agv_y = std::numeric_limits<double>::quiet_NaN();
+    double agv_yaw = std::numeric_limits<double>::quiet_NaN();
+    const bool agv_ok = get_latest_agv_pose(agv_x, agv_y, agv_yaw);
+    if (!agv_ok) {
+        RCLCPP_ERROR(rclcpp::get_logger("joint_position_callback"),
+                     "Failed to read AGV pose: no valid cached odom from /global_nav_odom yet");
+    }
+    joint_position.name.push_back("agv_x");
+    joint_position.position.push_back(agv_ok ? agv_x : std::numeric_limits<double>::quiet_NaN());
+    joint_position.name.push_back("agv_y");
+    joint_position.position.push_back(agv_ok ? agv_y : std::numeric_limits<double>::quiet_NaN());
+    joint_position.name.push_back("agv_yaw");
+    joint_position.position.push_back(agv_ok ? agv_yaw : std::numeric_limits<double>::quiet_NaN());
 
     joint_position.header.stamp = rclcpp::Clock().now();
     joint_position_pub->publish(joint_position);
@@ -1420,7 +1619,7 @@ void robot_states_callback(const rclcpp::Publisher<jaka_kargo_msgs::msg::RobotSt
     robot_states.inerror_left = (in_error[0] != 0);
     robot_states.inerror_right = (in_error[1] != 0);
 
-    // External axis states
+    // ---------------- External-axis state ----------------
     ExtAxisStatusList ext_status{};
     ret = robot.get_ext_status(&ext_status, -1);
     if (ret != 0)
@@ -1449,6 +1648,47 @@ void robot_states_callback(const rclcpp::Publisher<jaka_kargo_msgs::msg::RobotSt
             robot_states.ext_is_enabling.push_back(ext_status.status[i].is_enabling);
             robot_states.ext_is_inpos.push_back(ext_status.status[i].is_inpos);
             robot_states.ext_is_on_limit.push_back(ext_status.status[i].is_on_limit);
+        }
+    }
+
+    // ---------------- AGV state ----------------
+    {
+        std::lock_guard<std::mutex> lk(g_agv_motion_state_mtx);
+        if (!g_agv_motion_state.valid) {
+            RCLCPP_ERROR(rclcpp::get_logger("robot_states_callback"), 
+                        "agv_motion_state_callback hasn't received any /motion_state message yet");
+            ok = false;
+        } else {
+            const uint8_t state_id = g_agv_motion_state.state_id;
+            const uint32_t wheel_states = g_agv_motion_state.wheel_states;
+            robot_states.agv_state_id = state_id;
+            robot_states.agv_idle        = (state_id == 0);
+            robot_states.agv_manual_move = (state_id == 1);
+            robot_states.agv_navigation  = (state_id == 2);
+            robot_states.agv_disabled    = (state_id == 3);
+            robot_states.agv_unknown     = !(state_id == 0 || state_id == 1 || state_id == 2 || state_id == 3);
+            robot_states.agv_drive_state.clear();
+            robot_states.agv_drive_error_code.clear();
+            bool all_drive_enabled = true;
+            for (size_t i = 0; i < 4; ++i) {
+                const uint8_t ds = g_agv_motion_state.drive_state[i];
+
+                robot_states.agv_drive_state.push_back(g_agv_motion_state.drive_state[i]);
+                robot_states.agv_drive_error_code.push_back(g_agv_motion_state.drive_error_code[i]);
+
+                const bool drv_enable = (ds == 1);
+
+                all_drive_enabled = all_drive_enabled && drv_enable;
+            }
+            robot_states.agv_all_drive_enabled = all_drive_enabled;
+            robot_states.agv_estoping               = (wheel_states & (1u << 0)) != 0;
+            robot_states.agv_touching               = (wheel_states & (1u << 1)) != 0;
+            robot_states.agv_release_brake          = (wheel_states & (1u << 2)) != 0;
+            robot_states.agv_safety_board_heartbeat = (wheel_states & (1u << 3)) != 0;
+            robot_states.agv_reset                  = (wheel_states & (1u << 4)) != 0;
+            robot_states.agv_pausing                = (wheel_states & (1u << 5)) != 0;
+            robot_states.agv_stoping                = (wheel_states & (1u << 6)) != 0;
+            robot_states.agv_charging               = (wheel_states & (1u << 7)) != 0;
         }
     }
 
@@ -1516,6 +1756,7 @@ int main(int argc, char *argv[])
     // Params
     string default_ip = "127.0.0.1";
     string robot_ip = node->declare_parameter("ip", default_ip);
+    string agv_ns = node->declare_parameter("agv_ns", "/JAGV_O_01");
 
     edg_init_ip = make_edg_bcast(robot_ip);
     RCLCPP_INFO(node->get_logger(), "EDG init IP set to: %s", edg_init_ip.c_str());
@@ -1632,14 +1873,23 @@ int main(int argc, char *argv[])
     auto ext_enable_service = node->create_service<jaka_kargo_msgs::srv::ExtEnable>("/jaka_kargo_driver/ext_enable", &ext_enable_callback);
     auto jog_ext_service = node->create_service<jaka_kargo_msgs::srv::JogExt>("/jaka_kargo_driver/jog_ext", &jog_ext_callback);
     auto multi_move_ext_service = node->create_service<jaka_kargo_msgs::srv::MultiMoveExt>("/jaka_kargo_driver/multi_move_ext", &multi_move_ext_callback);
-    // auto get_ext_status_service = node->create_service<jaka_kargo_msgs::srv::GetExtStatus>("/jaka_kargo_driver/get_ext_status", &get_ext_status_callback);
+    auto agv_auto_move_service = node->create_service<jagv_interfaces::srv::AutoMove>("/jaka_kargo_driver/agv_auto_move", &agv_auto_move_callback);
+    auto agv_motion_state_control_service = node->create_service<jagv_interfaces::srv::MotionStateControl>("/jaka_kargo_driver/agv_motion_state_control", &agv_motion_state_control_callback);
+    auto agv_cmd_vel_service = node->create_service<jaka_kargo_msgs::srv::AgvCmdVel>("/jaka_kargo_driver/agv_cmd_vel", &agv_cmd_vel_callback);
 
-    // //3.1 End position pose status information reporting
+    // End position pose status information reporting
     tool_position_pub = node->create_publisher<geometry_msgs::msg::TwistStamped>("/jaka_kargo_driver/tool_position", 10);
-    // //3.2 Joint status information reporting
+    // Joint status information reporting
     joint_position_pub = node->create_publisher<sensor_msgs::msg::JointState>("/jaka_kargo_driver/joint_position", 10);
-    // //3.3 Report robot event status information
+    // /Report robot event status information
     robot_states_pub = node->create_publisher<jaka_kargo_msgs::msg::RobotStates>("/jaka_kargo_driver/robot_states", 10);
+
+    // AGV ROS bridge
+    agv_cmd_vel_pub = node->create_publisher<geometry_msgs::msg::Twist>(agv_ns + "/cmd_vel", 10);
+    agv_odom_sub = node->create_subscription<nav_msgs::msg::Odometry>(agv_ns + "/global_nav_odom", 10, agv_odom_callback);
+    agv_motion_state_sub = node->create_subscription<jagv_interfaces::msg::MotionState>(agv_ns + "/motion_state", 10, agv_motion_state_callback);
+    agv_auto_move_client = node->create_client<jagv_interfaces::srv::AutoMove>(agv_ns + "/agv_auto_move");
+    agv_motion_ctrl_client = node->create_client<jagv_interfaces::srv::MotionStateControl>(agv_ns + "/motion_state_control");
 
     // Monitor network connection status (runs in background thread)
     thread conn_state_thread(get_connect_state);

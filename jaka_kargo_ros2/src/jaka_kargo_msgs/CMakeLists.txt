@@ -12,7 +12,6 @@ find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_srvs REQUIRED)
-find_package(geometry_msgs REQUIRED)
 
 # Generate messages in the 'msg' folder
 rosidl_generate_interfaces(${PROJECT_NAME}
@@ -40,10 +39,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/ExtEnable.srv"
   "srv/JogExt.srv"
   "srv/MultiMoveExt.srv"
-  "srv/GetExtStatus.srv"
-  "srv/AutoMove.srv"
-  "srv/MotionStateControl.srv"
-   DEPENDENCIES std_srvs geometry_msgs
+  "srv/AgvCmdVel.srv"
+   DEPENDENCIES std_srvs
 )
 
 ament_package()

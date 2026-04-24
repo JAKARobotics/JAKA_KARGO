@@ -3,10 +3,32 @@
 ROS 2 workspace for controlling, simulating and planning for the **JAKA KARGO** robot.
 This repo contains a low-level driver that wraps the JAKA K1 SDK, a MoveIt server/action bridge, URDF/meshes, and an Isaac Sim integration layer.
 
+## Overview
+
+The JAKA KARGO system in this workspace includes:
+
+- **Dual arms**
+  - left arm: 7 joints
+  - right arm: 7 joints
+- **External axes / body**
+  - 4 joints
+- **AGV base**
+  - 3 virtual planning joints:
+    - `agv_x`
+    - `agv_y`
+    - `agv_yaw`
+
+So the full robot MoveIt model contains **21 joints total**.
+
+The system supports:
+- dual-arm robot control
+- External-axis / body control
+- AGV command / state bridging
+- MoveIt-based planning for arm-only, body-only, AGV-only, and full-robot trajectories.
 
 ## 🏁 Quick start 
 
-**Prereqs:** ROS 2 Humble , compiler with C++17, and JAKA K1 SDK library shipped in this workspace with its header files .
+**Prereqs:** ROS 2 Humble , compiler with C++17, and JAKA K1 SDK library shipped in this workspace with its header files.
 
 ### 🔧 Build Instructions
 
@@ -22,9 +44,9 @@ source install/setup.bash
 
 ```bash
 jaka_kargo_ros2/
-├── jaka_kargo_driver            # ROS2 node: wraps JAKA K1 SDK, publishes topics, offers services
+├── jaka_kargo_driver            # ROS2 node: wraps JAKA K1 SDK, AGV bridge, publishes topics, offers services
 ├── jaka_kargo_msgs              # custom ROS2 messages & services used by driver
-├── jaka_kargo_moveit_config     # MoveIt2 configuration for planning groups (full-robot, left-arm, right-arm, body / external-axis)
+├── jaka_kargo_moveit_config     # MoveIt2 configuration for planning groups (full-robot, left-arm, right-arm, body / external-axis, AGV)
 ├── jaka_kargo_planner           # MoveIt action server / trajectory bridge (FollowJointTrajectory)
 ├── jaka_kargo_description       # URDFs + meshes + RViz configs
 ├── jaka_kargo_isaacsim          # Isaac Sim bridge / scripts and launch files
@@ -33,54 +55,93 @@ jaka_kargo_ros2/
 
 ### 🚀 Launch Instructions  
 
-#### 1) Start the driver (connects to real controller)
+#### 1) Start the driver (connects to real robot controller)
 
 ```bash
-# adjust IP parameter as needed
-ros2 launch jaka_kargo_driver kargo_driver_start.launch.py ip:=10.5.5.100
+# Adjust parameters as needed
+ros2 launch jaka_kargo_driver kargo_driver_start.launch.py ip:=10.5.5.100 agv_ns:=/JAGV_O_01
 ```
 
 #### 2) Start MoveIt server (action server)
 
 ```bash
-# adjust IP parameter as needed
-ros2 launch jaka_kargo_planner kargo_moveit_server.launch.py ip:=10.5.5.100
+# Adjust parameters as needed
+ros2 launch jaka_kargo_planner kargo_moveit_server.launch.py \
+  ip:=10.5.5.100 \
+  ext_vel:=50.0 \
+  ext_acc:=50.0 \
+  agv_ns:=/JAGV_O_01 \
+  agv_map_name:=testmap \
+  agv_linear_speed:=0.5 \
+  agv_angular_speed:=0.2 \
+  agv_dece_distance:=1.0 \
+  agv_stop_distance:=0.2
 ```
 
 #### 3) Start MoveIt / RViz demo
+Real robot planning/execution:
 ```bash
 ros2 launch jaka_kargo_moveit_config demo.launch.py
+```
+
+RViz-only simulation:
+```bash
+ros2 launch jaka_kargo_moveit_config demo.launch.py use_rviz_sim:=true
+```
+
+Isaac Sim enabled RViz startup: 
+```bash
+ros2 launch jaka_kargo_isaacsim run_kargo_isaacsim.launch.py
+ros2 launch jaka_kargo_moveit_config demo.launch.py use_isaac_sim:=true
 ```
 
 ## 📖 Package Description
 
 ### 1. jaka_kargo_driver
 
-- Node `jaka_kargo_driver` — connects to controller using JAKA's SDK `libjakaAPI_2_3_0_DUAL_9.so` included in **jaka_kargo_driver/lib**, and exposes:
+- Node `jaka_kargo_driver` — connects to controller using JAKA's SDK `libjakaAPI_2_3_0_DUAL_9.so` included in **jaka_kargo_driver/lib**, also acts as a ROS bridge to AGV interfaces. 
 
-    - Topics
+    - **Topics published by `jaka_kargo_driver`**
         - `/jaka_kargo_driver/tool_position` (geometry_msgs/TwistStamped) — dual-arm TCP cartesian pose
-        - `/jaka_kargo_driver/joint_position` (sensor_msgs/JointState) — full-robot joint feedback: left-arm, right-arm, body / external-axis joints
-        - `/jaka_kargo_driver/robot_states` (jaka_kargo_msgs/RobotStates) — generic full-robot state flags
+        - `/jaka_kargo_driver/joint_position` (sensor_msgs/JointState) — full-robot joint feedback: left-arm, right-arm, body / external-axis, and AGV joints
+        - `/jaka_kargo_driver/robot_states` (jaka_kargo_msgs/RobotStates) — aggregated full-robot state flags including: 
+          - robot power / servo / collision / drag / error states
+          - external-axis states
+          - AGV motion states
+    - **Topics used by `jaka_kargo_driver` for AGV bridge**  
+    The driver connects to the following AGV-side interfaces:
+      - `/<agv_ns>/global_nav_odom` (nav_msgs/msg/Odometry) — AGV odometry / pose feedback
+      - `/<agv_ns>/motion_state` (jagv_interfaces/msg/MotionState) — AGV motion / wheel status feedback
+      - `/<agv_ns>/cmd_vel` (geometry_msgs/msg/Twist) — AGV velocity command topic published by the driver when using agv_cmd_vel
+    - **Services provided by `jaka_kargo_driver`**  
+    **Robot arm / controller services**  
+      - `/jaka_kargo_driver/linear_move` — cartesian linear movement (dual/single)
+      - `/jaka_kargo_driver/joint_move` — joint movement (dual/single)
+      - `/jaka_kargo_driver/servo_move_enable` — enable servo mode
+      - `/jaka_kargo_driver/edg_servo_p` — EDG servo in Cartesian space (per-arm)
+      - `/jaka_kargo_driver/edg_servo_j` — EDG servo in joint space (per-arm)
+      - `/jaka_kargo_driver/stop_move` — abort current robot motion
+      - `/jaka_kargo_driver/get_fk` — forward kinematics solution
+      - `/jaka_kargo_driver/get_ik` — inverse kinematics solution
+      - `/jaka_kargo_driver/drag_mode` — enable / disable free drag mode
+      - `/jaka_kargo_driver/set_tool_offset,` `/jaka_kargo_driver/get_tool_offset` — set / get tool offset
+      - `/jaka_kargo_driver/set_tool_payload`, `/jaka_kargo_driver/get_tool_payload` — set / get tool payload
+      - `/jaka_kargo_driver/set_collision_level`, `/jaka_kargo_driver/get_collision_level` — set / get collision sensitivity
+      - `/jaka_kargo_driver/get_default_base` — get base frame
+      - `/jaka_kargo_driver/clear_error` — clear error
+      - `/jaka_kargo_driver/get_sdk_version` — get JAKA SDK version
+      - `/jaka_kargo_driver/set_debug_mode` — enable / disable SDK debug mode
+      - `/jaka_kargo_driver/get_dh_params` — get DH parameters   
 
-    - Services 
-        - `/jaka_kargo_driver/linear_move` — cartesian linear movement (dual/single)
-        - `/jaka_kargo_driver/joint_move` — joint movement (dual/single)
-        - `/jaka_kargo_driver/servo_move_enable` — enable servo mode
-        - `/jaka_kargo_driver/edg_servo_p` — EDG servo in Cartesian (per-arm)
-        - `/jaka_kargo_driver/edg_servo_j` — EDG servo in joint space (per-arm)
-        - `/jaka_kargo_driver/stop_move` — abort current motion
-        - `/jaka_kargo_driver/get_fk` - forward kinematics solution
-        - `/jaka_kargo_driver/get_ik` - inverse kinematics solution
-        - `/jaka_kargo_driver/drag_mode` - enable free drag mode
-        - `/jaka_kargo_driver/set_tool_offset,` `/jaka_kargo_driver/get_tool_offset`
-        - `/jaka_kargo_driver/set_tool_payload`, `/jaka_kargo_driver/get_tool_payload`
-        - `/jaka_kargo_driver/set_collision_level`, `/jaka_kargo_driver/get_collision_level`
-        - `/jaka_kargo_driver/get_default_base`, `/jaka_kargo_driver/clear_error,` `/jaka_kargo_driver/get_sdk_version,` `/jaka_kargo_driver/set_debug_mode`, `/jaka_kargo_driver/get_dh_params`
-  
-        - `/jaka_kargo_driver/ext_enable` — enable or disable a single external axis
-        - `/jaka_kargo_driver/jog_ext` — jog a single external axis
-        - `/jaka_kargo_driver/multi_move_ext` — generic multi-axes motion command for external axes and/or robot arms
+      **External-axis services**  
+      - `/jaka_kargo_driver/ext_enable` — enable or disable a single external axis
+      - `/jaka_kargo_driver/jog_ext` — jog a single external axis
+      - `/jaka_kargo_driver/multi_move_ext` — generic multi-axes motion command for external axes and/or robot arm   
+
+      **AGV bridge services**  
+      - `/jaka_kargo_driver/agv_auto_move` (jagv_interfaces/srv/AutoMove) — forwards AGV auto-navigation request to the AGV controller
+      - `/jaka_kargo_driver/agv_motion_state_control` (jagv_interfaces/srv/MotionStateControl) — forwards AGV state control request such as stop / pause / resume
+      - `/jaka_kargo_driver/agv_cmd_vel` (jaka_kargo_msgs/srv/AgvCmdVel) — publishes cmd_vel commands to the AGV namespace 
 
 ### 2. jaka_kargo_msgs
 
@@ -90,22 +151,44 @@ ros2 launch jaka_kargo_moveit_config demo.launch.py
 
 - links against `libjakaAPI_2_3_0_DUAL_9.so` included in **jaka_kargo_planner/lib**. 
 - Provides `FollowJointTrajectory` action servers for moveit:
-    - `/jaka_kargo_full_robot_controller/follow_joint_trajectory` (18 joints — full-robot: 7 left arm + 7 right arm + 4 body / external axis joints)
-    - `/jaka_kargo_arm_l_controller/follow_joint_trajectory `(7 joints — left-arm)
+    - `/jaka_kargo_full_robot_controller/follow_joint_trajectory` (21 joints — full-robot: 7 left arm + 7 right arm + 4 body / external axis + 3 AGV joints)
+    - `/jaka_kargo_arm_l_controller/follow_joint_trajectory` (7 joints — left-arm)
     - `/jaka_kargo_arm_r_controller/follow_joint_trajectory` (7 joints — right-arm)
     - `/jaka_kargo_body_controller/follow_joint_trajectory` (4 joints — body / external axis)
+    - `/jaka_kargo_agv_controller/follow_joint_trajectory` (3 joints — AGV) 
+- Publishes `/kargo_joint_states` — full-robot state topic consumed by MoveIt in this project after topic remapping.
+- subscribes / calls the following AGV-side interfaces:  
+  - `/<agv_ns>/global_nav_odom` (nav_msgs/msg/Odometry) — AGV global pose feedback.
+  - `/<agv_ns>/agv_auto_move` (jagv_interfaces/srv/AutoMove) — AGV motion command service.
+  - `/<agv_ns>/motion_state_control` (jagv_interfaces/srv/MotionStateControl) — AGV motion state control service, used mainly for stop / cancel handling.
+- Launch parameters:
+  - `ip` —  Robot controller IP address.
+  - `ext_vel` — External-axis joint velocity.
+  - `ext_acc` — External-axis joint acceleration.
+  - `agv_ns` — AGV ROS namespace used to build AGV topic/service names.
+  - `agv_map_name` — The name of the current AGV map.
+  - `agv_linear_speed` — AGV linear speed.
+  - `agv_angular_speed` — AGV angular speed.
+  - `agv_dece_distance` — AGV deceleration distance.
+  - `agv_stop_distance` - AGV stop distance.
 
-- Publishes `/joint_states` — full-robot state expected by MoveIt.
 
 ### 4. jaka_kargo_moveit_config
 
-- URDF/XACRO, SRDF, joint limits and MoveIt controller configuration for: **left-arm**, **right-arm**, **body / external-axis**, and **full-robot** controllers.
+- XACRO, SRDF, joint limits and MoveIt controller configuration for: **left arm**, **right arm**, **body / external-axis**, **AGV**, and **full robot** controllers.
 
 ### 5. jaka_kargo_isaacsim
 
 - Scripts and launch files to run Isaac Sim with the robot USD for simulation + MoveIt integration.
 
-### Example service calls
+### 6. jagv_interfaces
+- ROS 2 interface package provided by the AGV side, containing the AGV message and service definitions used by this workspace.
+- Typical interfaces used in this project include:
+  - jagv_interfaces/srv/AutoMove
+  - jagv_interfaces/srv/MotionStateControl
+  - jagv_interfaces/msg/MotionState
+  
+### Example Driver Service Calls
 
 #### 1. Joint move (right arm only)
 
@@ -160,7 +243,7 @@ ros2 service call /jaka_kargo_driver/clear_error jaka_kargo_msgs/srv/ClearError
 ros2 service call /jaka_kargo_driver/get_sdk_version jaka_kargo_msgs/srv/GetSdkVersion 
 ```
 
-### External axis service calls
+### External-axis Driver Service Calls
 
 #### 8. Enable one external-axis  
 
@@ -320,9 +403,50 @@ ros2 service call /jaka_kargo_driver/multi_move_ext jaka_kargo_msgs/srv/MultiMov
 }"
 ```
 
+### AGV Driver Service Calls
+
+#### 14. AGV auto_move navigation
+```
+ros2 service call /jaka_kargo_driver/agv_auto_move jagv_interfaces/srv/AutoMove "{
+  map_name: 'test_map',
+  start_pose: {x: 0.0, y: 0.0, theta: 0.0},
+  end_pose:   {x: 1.0, y: 0.5, theta: 0.0},
+  path_coords: [],
+  linear_speed: 0.5,
+  angular_speed: 0.2,
+  dece_distance: 1.0,
+  stop_distance: 0.2,
+  move_mode: 0,
+  move_type: 0
+}"
+```
+
+#### 15. Stop AGV motion
+```
+ros2 service call /jaka_kargo_driver/agv_motion_state_control jagv_interfaces/srv/MotionStateControl "{
+  motion_state_code: 3
+}"
+```
+
+#### 16. AGV continuous velocity motion command  
+```bash
+ros2 service call /jaka_kargo_driver/agv_cmd_vel jaka_kargo_msgs/srv/AgvCmdVel "{
+  linear_x: 0.1,
+  linear_y: 0.0,
+  angular_z: 0.0,
+  duration: 2.0,
+  publish_rate: 20.0,
+  stop_after: true
+}"
+```
+- Notes:
+  - publish_rate must be greater than 10 Hz
+  - when both translation and rotation are requested together, the AGV backend prioritizes rotation
+  - a zero duration can be used to publish a single cmd_vel message
+
 ## 🧪 MoveIt Simulation Modes
 
-To support both RViz-only simulation and Isaac Sim integration, we modified the `launches.py` file used by MoveIt2:  
+To support both RViz-only simulation and Isaac Sim integration, this project uses a modified `launches.py` from MoveIt2's `moveit_configs_utils`.  
 
 🛠️ **Modifications**:
 
@@ -332,7 +456,7 @@ To support both RViz-only simulation and Isaac Sim integration, we modified the 
 ⚙️ **Setup**:
 
 - Replace the original `launches.py` from MoveIt2 with the modified version provided in **jaka_kargo_ros2** package.
-- To find where to replace:  
+- Find the original file:  
   ```bash
   find /opt/ros/humble/ -name launches.py
   ```
@@ -341,7 +465,7 @@ To support both RViz-only simulation and Isaac Sim integration, we modified the 
   sudo cp /opt/ros/humble/lib/python3.10/site-packages/moveit_configs_utils/launches.py \
         /opt/ros/humble/lib/python3.10/site-packages/moveit_configs_utils/launches.py.bak
   ```
-- Replace it with the launches.py from our package:
+- Replace it with the `launches.py` from this repo:
   ```bash
   sudo cp ~/JAKA_KARGO/jaka_kargo_ros2/launches.py \
         /opt/ros/humble/lib/python3.10/site-packages/moveit_configs_utils/launches.py
@@ -355,40 +479,35 @@ To support both RViz-only simulation and Isaac Sim integration, we modified the 
 ### 🚀 Launch Moveit Simulation Modes  
 
 ### a. RViz-only simulation mode
-
-Launch MoveIt2 in RViz-only simulation mode using the following command:
-
 ```bash
 ros2 launch jaka_kargo_moveit_config demo.launch.py use_rviz_sim:=true
 ```
 
 ### b. Isaac Sim simulation mode 
 
-#### 1. Installing Isaac Sim
+#### 1. Install Isaac Sim
 
 Follow the [official instructions](
 https://docs.isaacsim.omniverse.nvidia.com/4.5.0/installation/install_workstation.html) to install Isaac-sim.
 
-#### 2. Launching Isaac Sim
+#### 2. Launch Isaac Sim
 
 We provide the ROS 2 launch interface for running Isaac Sim and loading the robot model directly into a USD stage.  
 
-- Start Isaac Sim and load the robot model:
+```bash
+ros2 launch jaka_kargo_isaacsim run_kargo_isaacsim.launch.py
+```
 
-  ```bash
-  ros2 launch jaka_kargo_isaacsim run_kargo_isaacsim.launch.py
-  ```
+  This internally:
 
-    This internally:
+  - Launches Isaac Sim through `python.sh`.
+  - Loads the USD from `jaka_kargo_description`.
+  - Sets up **/isaac_joint_states** and **isaac_joint_commands** topics for communication with MoveIt2 and RViz.
 
-    - Launches Isaac Sim through `python.sh`.
-    - Loads the USD from `jaka_kargo_description`.
-    - Sets up **/isaac_joint_states** and **isaac_joint_commands** topics for communication with MoveIt2 and RViz.
-
-- Launch MoveIt2 and RViz with Isaac Sim integration enabled:
-  ```bash
-  ros2 launch jaka_kargo_moveit_config demo.launch.py use_isaac_sim:=true
-  ```
+Launch MoveIt2 + RViz with Isaac Sim integration enabled:
+```bash
+ros2 launch jaka_kargo_moveit_config demo.launch.py use_isaac_sim:=true
+```
 
 This setup enables planning trajectories in RViz and executing them directly in Isaac Sim.
 
@@ -397,7 +516,7 @@ This setup enables planning trajectories in RViz and executing them directly in 
 In RViz:
 - Plan and execute trajectories to target poses or joint states.
 - Only one planning group (left-arm or right-arm or body / external-axis or full_robot) can be selected at a time.
-- A full-robot controller can be enabled to control left-arm, right-arm and body / external-axis together.
+- A full-robot controller can be enabled to control left-arm, right-arm, body / external-axis and AGV together.
 
 ⚠️ **Note:**  
 ROS 2 controllers use a claiming property:
@@ -415,7 +534,7 @@ ros2 control switch_controllers \
   --strict
 ```
 
-Revert to left-arm + right-arm + body controllers:
+Activate subgroup controllers (left-arm + right-arm + body + AGV controllers):
 
 ```bash
 ros2 control switch_controllers \
@@ -423,7 +542,6 @@ ros2 control switch_controllers \
   --deactivate jaka_kargo_full_robot_controller \
   --strict
 ```
-
 
 ### 🧯 Troubleshooting Isaac Sim
 
