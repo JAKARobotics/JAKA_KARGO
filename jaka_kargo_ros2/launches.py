@@ -12,7 +12,7 @@ from launch.actions import (
 )
 from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -34,8 +34,8 @@ def generate_rsp_launch(moveit_config):
 
     ld = LaunchDescription()
     ld.add_action(DeclareLaunchArgument("publish_frequency", default_value="15.0"))
+    ld.add_action(DeclareLaunchArgument("joint_states_topic", default_value="/joint_states"))
 
-    # Given the published joint states, publish tf for the robot links and the robot description
     rsp_node = Node(
         package="robot_state_publisher",
         executable="robot_state_publisher",
@@ -46,6 +46,9 @@ def generate_rsp_launch(moveit_config):
             {
                 "publish_frequency": LaunchConfiguration("publish_frequency"),
             },
+        ],
+        remappings=[
+            ("joint_states", LaunchConfiguration("joint_states_topic")),
         ],
     )
     ld.add_action(rsp_node)
@@ -267,7 +270,11 @@ def generate_move_group_launch(moveit_config):
         extra_debug_args=["--debug"],
         # Set the display variable, in case OpenGL code is used internally
         additional_env={"DISPLAY": os.environ.get("DISPLAY", "")},
+        remappings=[
+            ("joint_states", LaunchConfiguration("joint_states_topic")),
+        ],
     )
+
     return ld
 
 
@@ -345,6 +352,12 @@ def generate_demo_launch(moveit_config, launch_package_path=None):
     )
     ld.add_action(DeclareBooleanLaunchArg("use_rviz", default_value=True))
 
+    joint_states_topic = PythonExpression([
+        "'/joint_states' if ('", LaunchConfiguration("use_rviz_sim"),
+        "' == 'true' or '", LaunchConfiguration("use_isaac_sim"),
+        "' == 'true') else '/kargo_joint_states'"
+    ])
+
     moveit_config = (
         MoveItConfigsBuilder(
             robot_name=os.path.basename(str(moveit_config.package_path)).replace("_moveit_config", ""),
@@ -377,6 +390,9 @@ def generate_demo_launch(moveit_config, launch_package_path=None):
             PythonLaunchDescriptionSource(
                 str(launch_package_path / "launch/rsp.launch.py")
             ),
+            launch_arguments={
+                "joint_states_topic": joint_states_topic,
+            }.items(),
         )
     )
 
@@ -385,6 +401,9 @@ def generate_demo_launch(moveit_config, launch_package_path=None):
             PythonLaunchDescriptionSource(
                 str(launch_package_path / "launch/move_group.launch.py")
             ),
+            launch_arguments={
+                "joint_states_topic": joint_states_topic,
+            }.items(),
         )
     )
 
