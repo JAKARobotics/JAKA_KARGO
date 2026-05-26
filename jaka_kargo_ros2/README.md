@@ -59,7 +59,7 @@ jaka_kargo_ros2/
 
 ```bash
 # Adjust parameters as needed
-ros2 launch jaka_kargo_driver kargo_driver_start.launch.py ip:=10.5.5.100 agv_ns:=/JAGV_O_01
+ros2 launch jaka_kargo_driver kargo_driver_start.launch.py ip:=10.5.5.100
 ```
 
 #### 2) Start MoveIt server (action server)
@@ -70,12 +70,8 @@ ros2 launch jaka_kargo_planner kargo_moveit_server.launch.py \
   ip:=10.5.5.100 \
   ext_vel:=50.0 \
   ext_acc:=50.0 \
-  agv_ns:=/JAGV_O_01 \
   agv_map_name:=testmap \
-  agv_linear_speed:=0.5 \
-  agv_angular_speed:=0.2 \
-  agv_dece_distance:=1.0 \
-  agv_stop_distance:=0.2
+  agv_linear_speed:=0.1
 ```
 
 #### 3) Start MoveIt / RViz demo
@@ -95,6 +91,28 @@ ros2 launch jaka_kargo_isaacsim run_kargo_isaacsim.launch.py
 ros2 launch jaka_kargo_moveit_config demo.launch.py use_isaac_sim:=true
 ```
 
+## Important Notes
+
+### 1) Robotic arms  
+
+For real-robot MoveIt execution, a wired Ethernet connection to the KARGO controller is strongly recommended.
+
+When connected over Wi-Fi, network latency or packet loss may affect high-frequency EDG servo command transmission. Arm trajectory execution uses `edg_servo_j` commands at approximately **500 Hz**. If the network connection is unstable, some servo command packets may be delayed or lost, especially during complex arm trajectories. This can cause discontinuous motion, sudden jumps, protective stops, or robot disable.
+
+This is especially important when executing coordinated whole-robot plans involving the arms, external axes, and AGV together. Whole-robot planning is supported, but when using Wi-Fi, it is recommended to use simple and smooth arm trajectories to reduce the risk of command loss.
+
+For stable execution of complex arm trajectories or coordinated whole-robot motion, connect to the KARGO controller directly using an Ethernet cable.
+
+### 2) AGV  
+
+To move the AGV through MoveIt, the target map must already be created/defined in the JAKA app. The map name should be provided through `agv_map_name` when launching `kargo_moveit_server`, so the server can set the target map at startup.
+
+Before executing AGV motion through MoveIt, or before calling the driver service `/jaka_kargo_driver/agv_auto_move`, the user should perform AGV relocalization. Relocalization can be performed either manually in the JAKA app, or through the driver services:
+- `/jaka_kargo_driver/agv_post_map_location` — relocalize AGV to a predefined map node
+- `/jaka_kargo_driver/agv_set_map_location` — relocalize / set AGV pose by map coordinates
+
+Otherwise, coordinate navigation may fail because the AGV may not know its correct pose in the selected map.
+
 ## 📖 Package Description
 
 ### 1. jaka_kargo_driver
@@ -108,11 +126,26 @@ ros2 launch jaka_kargo_moveit_config demo.launch.py use_isaac_sim:=true
           - robot power / servo / collision / drag / error states
           - external-axis states
           - AGV motion states
-    - **Topics used by `jaka_kargo_driver` for AGV bridge**  
-    The driver connects to the following AGV-side interfaces:
-      - `/<agv_ns>/global_nav_odom` (nav_msgs/msg/Odometry) — AGV odometry / pose feedback
-      - `/<agv_ns>/motion_state` (jagv_interfaces/msg/MotionState) — AGV motion / wheel status feedback
-      - `/<agv_ns>/cmd_vel` (geometry_msgs/msg/Twist) — AGV velocity command topic published by the driver when using agv_cmd_vel
+
+    - **AGV interfaces used by `jaka_kargo_driver`**  
+      The driver uses a hybrid AGV bridge:  
+      - AGV pose feedback:
+        - Automatically subscribes to the discovered AGV odom topic:
+          - `*/agv/global_nav_odom` — AGV odometry / pose feedback
+          - type: `nav_msgs/msg/Odometry`  
+      - AGV velocity command:
+        - Automatically publishes to the discovered AGV velocity topic:
+          - `*/agv/cmd_vel` — AGV velocity command topic
+          - type: `geometry_msgs/msg/Twist`  
+      - AGV HTTP interfaces:
+        - `GET /HomePage/GetStateInfo` — reads AGV states
+        - `POST /HomePage/PostMapChange` — changes map
+        - `POST /MapPage/SetAutoMove` — moves to map coordinate
+        - `POST /MapPage/SetStateCode`— sends commands: pause / continue / stop
+        - `POST /HomePage/PostMapLocation` — relocates to node
+        - `POST /HomePage/PostMapNavigation` — moves to node
+        - `POST /MapPage/SetMapLocation` — relocates to map coordinate
+
     - **Services provided by `jaka_kargo_driver`**  
     **Robot arm / controller services**  
       - `/jaka_kargo_driver/linear_move` — cartesian linear movement (dual/single)
@@ -139,9 +172,21 @@ ros2 launch jaka_kargo_moveit_config demo.launch.py use_isaac_sim:=true
       - `/jaka_kargo_driver/multi_move_ext` — generic multi-axes motion command for external axes and/or robot arm   
 
       **AGV bridge services**  
-      - `/jaka_kargo_driver/agv_auto_move` (jagv_interfaces/srv/AutoMove) — forwards AGV auto-navigation request to the AGV controller
-      - `/jaka_kargo_driver/agv_motion_state_control` (jagv_interfaces/srv/MotionStateControl) — forwards AGV state control request such as stop / pause / resume
-      - `/jaka_kargo_driver/agv_cmd_vel` (jaka_kargo_msgs/srv/AgvCmdVel) — publishes cmd_vel commands to the AGV namespace 
+      - `/jaka_kargo_driver/agv_get_current_map` (jaka_kargo_msgs/srv/AgvGetCurrentMap) — reads current AGV map name using HTTP `GET /HomePage/GetStateInfo`
+      - `/jaka_kargo_driver/agv_map_change` (jaka_kargo_msgs/srv/AgvMapChange) — changes AGV map using HTTP `POST /HomePage/PostMapChange`
+      - `/jaka_kargo_driver/agv_auto_move` (jaka_kargo_msgs/srv/AgvAutoMove) — sends coordinate navigation command using HTTP `POST /MapPage/SetAutoMove`
+        - Note: 
+          - Relocalization is required before using `/jaka_kargo_driver/agv_auto_move`, because coordinate navigation depends on the AGV knowing its current pose in the selected map.
+          - Relocalization can be performed either manually in the JAKA app, or through the driver services: 
+            - `/jaka_kargo_driver/agv_post_map_location` 
+            - `/jaka_kargo_driver/agv_set_map_location`
+      - `/jaka_kargo_driver/agv_motion_state_control` (jaka_kargo_msgs/srv/AgvMotionStateControl) — sends pause / continue / stop command using HTTP `POST /MapPage/SetStateCode`
+      - `/jaka_kargo_driver/agv_cmd_vel` (jaka_kargo_msgs/srv/AgvCmdVel) — publishes velocity commands to the discovered AGV `cmd_vel` topic
+      - `/jaka_kargo_driver/agv_post_map_location` (jaka_kargo_msgs/srv/AgvPostMapLocation) — relocates AGV to a predefined node using HTTP `POST /HomePage/PostMapLocation`
+      - `/jaka_kargo_driver/agv_post_map_navigation` (jaka_kargo_msgs/srv/AgvPostMapNavigation) — navigates AGV to a predefined node using HTTP `POST /HomePage/PostMapNavigation`
+      - `/jaka_kargo_driver/agv_set_map_location` (jaka_kargo_msgs/srv/AgvSetMapLocation) — sets / relocates AGV pose by coordinates using HTTP `POST /MapPage/SetMapLocation`
+      - `/jaka_kargo_driver/agv_get_current_node` (jaka_kargo_msgs/srv/AgvGetCurrentNode) — reads current AGV node ID using HTTP `GET /HomePage/GetStateInfo`
+      - `/jaka_kargo_driver/agv_get_battery` (jaka_kargo_msgs/srv/AgvGetBattery) — reads AGV Main/Sub battery channels using HTTP `GET /HomePage/GetStateInfo`
 
 ### 2. jaka_kargo_msgs
 
@@ -157,20 +202,25 @@ ros2 launch jaka_kargo_moveit_config demo.launch.py use_isaac_sim:=true
     - `/jaka_kargo_body_controller/follow_joint_trajectory` (4 joints — body / external axis)
     - `/jaka_kargo_agv_controller/follow_joint_trajectory` (3 joints — AGV) 
 - Publishes `/kargo_joint_states` — full-robot state topic consumed by MoveIt in this project after topic remapping.
-- subscribes / calls the following AGV-side interfaces:  
-  - `/<agv_ns>/global_nav_odom` (nav_msgs/msg/Odometry) — AGV global pose feedback.
-  - `/<agv_ns>/agv_auto_move` (jagv_interfaces/srv/AutoMove) — AGV motion command service.
-  - `/<agv_ns>/motion_state_control` (jagv_interfaces/srv/MotionStateControl) — AGV motion state control service, used mainly for stop / cancel handling.
+- Uses the following AGV-side interfaces:
+  - Automatically subscribes to the discovered AGV odom topic:
+    - `*/agv/global_nav_odom` — AGV odometry / pose feedback
+    - type: `nav_msgs/msg/Odometry`
+  - Sends AGV coordinate navigation command through HTTP:
+    - `POST /MapPage/SetAutoMove`
+  - Sends AGV stop / pause / continue command through HTTP:
+    - `POST /MapPage/SetStateCode`
 - Launch parameters:
-  - `ip` —  Robot controller IP address.
+  - `ip` —  Robot controller IP address, also used as the AGV HTTP host.
   - `ext_vel` — External-axis joint velocity.
   - `ext_acc` — External-axis joint acceleration.
-  - `agv_ns` — AGV ROS namespace used to build AGV topic/service names.
   - `agv_map_name` — The name of the current AGV map.
   - `agv_linear_speed` — AGV linear speed.
-  - `agv_angular_speed` — AGV angular speed.
-  - `agv_dece_distance` — AGV deceleration distance.
-  - `agv_stop_distance` - AGV stop distance.
+- AGV MoveIt execution requirements:
+  - The map must already be created/defined in the JAKA app.
+  - The correct map name must be provided using `agv_map_name` when launching `kargo_moveit_server`.
+  - `kargo_moveit_server` sets the target map at startup using the AGV HTTP map-change interface.
+  - Before executing AGV motion through MoveIt, the user should perform AGV relocalization in the JAKA app.
 
 
 ### 4. jaka_kargo_moveit_config
@@ -181,12 +231,20 @@ ros2 launch jaka_kargo_moveit_config demo.launch.py use_isaac_sim:=true
 
 - Scripts and launch files to run Isaac Sim with the robot USD for simulation + MoveIt integration.
 
-### 6. jagv_interfaces
-- ROS 2 interface package provided by the AGV side, containing the AGV message and service definitions used by this workspace.
-- Typical interfaces used in this project include:
-  - jagv_interfaces/srv/AutoMove
-  - jagv_interfaces/srv/MotionStateControl
-  - jagv_interfaces/msg/MotionState
+### 6. AGV HTTP interfaces
+
+AGV navigation and state control are handled through HTTP APIs exposed by the AGV controller:
+
+- `GET /HomePage/GetStateInfo` — reads AGV state information, including map name, current node ID, battery, motion state, and wheel state
+- `POST /HomePage/PostMapChange` — changes the active AGV map
+- `POST /MapPage/SetAutoMove` — sends coordinate-based AGV navigation command
+- `POST /MapPage/SetStateCode` — sends AGV navigation control command: pause / continue / stop
+- `POST /HomePage/PostMapLocation` — relocates the AGV to a predefined map node
+- `POST /HomePage/PostMapNavigation` — navigates the AGV to a predefined map node
+- `POST /MapPage/SetMapLocation` — relocates / sets the AGV current pose by map coordinates
+
+
+The ROS 2 driver wraps these HTTP APIs using custom services in `jaka_kargo_msgs`.
   
 ### Example Driver Service Calls
 
@@ -350,6 +408,7 @@ ros2 service call /jaka_kargo_driver/multi_move_ext jaka_kargo_msgs/srv/MultiMov
 ```
 
 #### 13. Move 2 external-axis + 2 robot-arms (joint motion)
+
 ```bash
 ros2 service call /jaka_kargo_driver/multi_move_ext jaka_kargo_msgs/srv/MultiMoveExt "{
   is_block: true,
@@ -405,33 +464,64 @@ ros2 service call /jaka_kargo_driver/multi_move_ext jaka_kargo_msgs/srv/MultiMov
 
 ### AGV Driver Service Calls
 
-#### 14. AGV auto_move navigation
+#### 14. Get current AGV map
+
+```bash
+ros2 service call /jaka_kargo_driver/agv_get_current_map jaka_kargo_msgs/srv/AgvGetCurrentMap "{}"
 ```
-ros2 service call /jaka_kargo_driver/agv_auto_move jagv_interfaces/srv/AutoMove "{
-  map_name: 'test_map',
-  start_pose: {x: 0.0, y: 0.0, theta: 0.0},
-  end_pose:   {x: 1.0, y: 0.5, theta: 0.0},
-  path_coords: [],
-  linear_speed: 0.5,
-  angular_speed: 0.2,
-  dece_distance: 1.0,
-  stop_distance: 0.2,
-  move_mode: 0,
-  move_type: 0
+
+#### 15. Change AGV map
+
+```bash
+ros2 service call /jaka_kargo_driver/agv_map_change jaka_kargo_msgs/srv/AgvMapChange "{
+  map_name: 'test0407'
 }"
 ```
 
-#### 15. Stop AGV motion
+#### 16. AGV auto_move navigation
+
+```bash
+ros2 service call /jaka_kargo_driver/agv_auto_move jaka_kargo_msgs/srv/AgvAutoMove "{
+  target_x: 500.0,
+  target_y: 0.0,
+  target_yaw: 0.0,
+  speed: 100
+}"
 ```
-ros2 service call /jaka_kargo_driver/agv_motion_state_control jagv_interfaces/srv/MotionStateControl "{
-  motion_state_code: 3
+- Notes:  
+  - `target_x` and `target_y` are in **millimeters**
+  - `target_yaw` is in **degrees**
+  - `speed` is an **integer** in **mm/s**
+
+#### 17. Pause AGV navigation
+
+```bash
+ros2 service call /jaka_kargo_driver/agv_motion_state_control jaka_kargo_msgs/srv/AgvMotionStateControl "{
+  state_code: 1
 }"
 ```
 
-#### 16. AGV continuous velocity motion command  
+#### 18. Resume AGV navigation
+
+```bash
+ros2 service call /jaka_kargo_driver/agv_motion_state_control jaka_kargo_msgs/srv/AgvMotionStateControl "{
+  state_code: 2
+}"
+```
+
+#### 19. Stop AGV navigation
+
+```bash
+ros2 service call /jaka_kargo_driver/agv_motion_state_control jaka_kargo_msgs/srv/AgvMotionStateControl "{
+  state_code: 3
+}"
+```
+
+#### 20. AGV continuous velocity motion command  
+
 ```bash
 ros2 service call /jaka_kargo_driver/agv_cmd_vel jaka_kargo_msgs/srv/AgvCmdVel "{
-  linear_x: 0.1,
+  linear_x: 0.05,
   linear_y: 0.0,
   angular_z: 0.0,
   duration: 2.0,
@@ -440,9 +530,57 @@ ros2 service call /jaka_kargo_driver/agv_cmd_vel jaka_kargo_msgs/srv/AgvCmdVel "
 }"
 ```
 - Notes:
-  - publish_rate must be greater than 10 Hz
+  - `publish_rate` must be **greater than 10 Hz**
   - when both translation and rotation are requested together, the AGV backend prioritizes rotation
-  - a zero duration can be used to publish a single cmd_vel message
+  - Set `duration: 0.0` to publish only one **cmd_vel** message.
+
+#### 21. Relocate AGV to predefined node
+
+```bash
+ros2 service call /jaka_kargo_driver/agv_post_map_location jaka_kargo_msgs/srv/AgvPostMapLocation "{
+  node: 1
+}"
+```
+
+#### 22. Navigate AGV to predefined node
+
+```bash
+ros2 service call /jaka_kargo_driver/agv_post_map_navigation jaka_kargo_msgs/srv/AgvPostMapNavigation "{
+  node: 1,
+  speed: 100
+}"
+```
+
+#### 23. Set / relocate AGV pose by map coordinates
+
+```bash
+ros2 service call /jaka_kargo_driver/agv_set_map_location jaka_kargo_msgs/srv/AgvSetMapLocation "{
+  pos_x: 500.0,
+  pos_y: 0.0,
+  pos_ang: 0.0
+}"
+```  
+- Notes:
+  - `pos_x` and `pos_y` are in **millimeters**
+  - `pos_ang` is in **degrees**
+
+#### 24. Get current AGV node
+
+```bash
+ros2 service call /jaka_kargo_driver/agv_get_current_node jaka_kargo_msgs/srv/AgvGetCurrentNode "{}"
+```
+
+#### 25. Get AGV battery
+
+```bash
+ros2 service call /jaka_kargo_driver/agv_get_battery jaka_kargo_msgs/srv/AgvGetBattery "{}"
+```  
+- Notes:
+
+  - KARGO has two battery channels: **MainBattery** and **SubBattery**.
+  - A value from **0 to 100** means a valid battery percentage. 
+  - A value of **65535** means that battery channel is not connected or is off.
+  - The service returns both channel values and an effective battery percentage.
 
 ## 🧪 MoveIt Simulation Modes
 

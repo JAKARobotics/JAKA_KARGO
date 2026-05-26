@@ -1,4 +1,0 @@
-uint8 motion_state_code  # 1-暫停， 2-恢復， 3-停止
----
-int32 ret_code
-string ret_msg

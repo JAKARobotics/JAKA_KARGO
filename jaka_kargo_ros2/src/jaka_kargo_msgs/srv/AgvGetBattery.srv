@@ -1,0 +1,12 @@
+---
+int32 ret
+string message
+
+float64 battery_percent
+string active_channel
+
+float64 main_battery_percent
+bool main_battery_valid
+
+float64 sub_battery_percent
+bool sub_battery_valid

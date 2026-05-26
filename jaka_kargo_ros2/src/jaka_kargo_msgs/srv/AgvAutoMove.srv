@@ -1,0 +1,7 @@
+float64 target_x        # mm
+float64 target_y        # mm
+float64 target_yaw      # deg
+int32 speed             # mm/s
+---
+int32 ret
+string message

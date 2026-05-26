@@ -1,5 +1,0 @@
-jagv_interfaces/LocState loc_state
-HardwareState hw_state
-uint32 wheel_states
-uint8 motion_state_id
-bool has_obstacle

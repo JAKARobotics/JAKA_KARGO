@@ -1,6 +1,0 @@
-uint16 battery_abs_level
-uint16 battery_rel_level
-uint16 battery_charg_discharg_state
-float32 battery_temperature
-float32 battery_voltage
-float32 battery_current

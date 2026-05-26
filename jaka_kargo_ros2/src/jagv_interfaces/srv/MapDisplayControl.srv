@@ -1,6 +1,0 @@
-string command # "open_map_update", "close_map_update"
-bool update_flag # true: update the map state, false: cancel the update
----
-int32 ret_code
-string ret_msg
-string command

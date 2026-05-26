@@ -21,7 +21,8 @@ find_package(jaka_kargo_msgs REQUIRED)
 find_package(action_msgs REQUIRED)
 find_package(control_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
-find_package(jagv_interfaces REQUIRED)
+find_package(Boost REQUIRED COMPONENTS system)
+find_package(cJSON REQUIRED)
 
 # Declare ROS 2 message and service dependencies
 find_package(rosidl_default_generators REQUIRED)
@@ -40,7 +41,6 @@ ament_target_dependencies(jaka_kargo_driver
   action_msgs
   control_msgs
   nav_msgs
-  jagv_interfaces
 )
 
 # For including directories in ROS 2
@@ -58,7 +58,11 @@ set(LIBRARY_DIR ${CMAKE_CURRENT_SOURCE_DIR}/lib)
 link_directories(${LIBRARY_DIR})
 
 # Find the library and link it properly
-target_link_libraries(jaka_kargo_driver ${LIBRARY_DIR}/libjakaAPI_2_3_0_DUAL_9.so)
+target_link_libraries(jaka_kargo_driver
+  ${LIBRARY_DIR}/libjakaAPI_2_3_0_DUAL_9.so
+  ${Boost_LIBRARIES}
+  cjson
+)
 
 # Install executables
 install(TARGETS

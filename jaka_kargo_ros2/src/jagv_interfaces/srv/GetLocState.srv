@@ -1,8 +1,0 @@
-string command # "get_loc_state"
----
-int32 ret_code
-string ret_msg
-bool is_loc_enabled
-bool is_with_map
-string map_name
-string command

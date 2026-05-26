@@ -39,7 +39,16 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/ExtEnable.srv"
   "srv/JogExt.srv"
   "srv/MultiMoveExt.srv"
+  "srv/AgvGetCurrentMap.srv"
+  "srv/AgvMapChange.srv"
+  "srv/AgvAutoMove.srv"
+  "srv/AgvMotionStateControl.srv"
   "srv/AgvCmdVel.srv"
+  "srv/AgvPostMapLocation.srv"
+  "srv/AgvPostMapNavigation.srv"
+  "srv/AgvSetMapLocation.srv"
+  "srv/AgvGetCurrentNode.srv"
+  "srv/AgvGetBattery.srv"
    DEPENDENCIES std_srvs
 )
 

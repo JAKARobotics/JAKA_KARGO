@@ -1,0 +1,5 @@
+int32 node
+int32 speed
+---
+int32 ret
+string message

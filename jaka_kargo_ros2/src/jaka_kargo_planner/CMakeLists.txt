@@ -23,7 +23,8 @@ find_package(moveit_ros_planning_interface REQUIRED)
 find_package(moveit_visual_tools REQUIRED)
 find_package(moveit_core REQUIRED)
 find_package(nav_msgs REQUIRED)
-find_package(jagv_interfaces REQUIRED)
+find_package(Boost REQUIRED COMPONENTS system)
+find_package(cJSON REQUIRED)
 
 # Declare executable targets
 add_executable(kargo_moveit_server src/kargo_moveit_server.cpp)
@@ -33,14 +34,12 @@ ament_target_dependencies(kargo_moveit_server
   rclcpp
   std_msgs
   geometry_msgs
-  sensor_msgs
   jaka_kargo_msgs
   moveit_msgs
   action_msgs
   control_msgs
   moveit_ros_planning_interface
   nav_msgs
-  jagv_interfaces
 )
 
 # For including directories in ROS 2
@@ -49,6 +48,7 @@ target_include_directories(kargo_moveit_server
     include
   PRIVATE
     ${ament_INCLUDE_DIRS}
+    ${Boost_INCLUDE_DIRS}
 )
 
 # Specify where to find external libraries
@@ -58,7 +58,11 @@ set(LIBRARY_DIR ${CMAKE_CURRENT_SOURCE_DIR}/lib)
 link_directories(${LIBRARY_DIR})
 
 # Find the library and link it properly
-target_link_libraries(kargo_moveit_server ${LIBRARY_DIR}/libjakaAPI_2_3_0_DUAL_9.so)
+target_link_libraries(kargo_moveit_server 
+  ${LIBRARY_DIR}/libjakaAPI_2_3_0_DUAL_9.so
+  ${Boost_LIBRARIES}
+  cjson
+)
 
 # Install executables
 install(TARGETS

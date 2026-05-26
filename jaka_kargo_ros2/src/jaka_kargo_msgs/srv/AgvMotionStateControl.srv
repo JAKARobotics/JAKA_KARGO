@@ -1,0 +1,4 @@
+uint8 state_code        # 1 pause, 2 continue, 3 stop
+---
+int32 ret
+string message

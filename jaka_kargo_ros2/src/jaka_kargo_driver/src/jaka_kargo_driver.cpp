@@ -29,11 +29,23 @@
 #include "jaka_kargo_msgs/srv/ext_enable.hpp"
 #include "jaka_kargo_msgs/srv/jog_ext.hpp"
 #include "jaka_kargo_msgs/srv/multi_move_ext.hpp"
+#include "jaka_kargo_msgs/srv/agv_get_current_map.hpp"
+#include "jaka_kargo_msgs/srv/agv_map_change.hpp"
+#include "jaka_kargo_msgs/srv/agv_auto_move.hpp"
+#include "jaka_kargo_msgs/srv/agv_motion_state_control.hpp"
 #include "jaka_kargo_msgs/srv/agv_cmd_vel.hpp"
+#include "jaka_kargo_msgs/srv/agv_post_map_location.hpp"
+#include "jaka_kargo_msgs/srv/agv_post_map_navigation.hpp"
+#include "jaka_kargo_msgs/srv/agv_set_map_location.hpp"
+#include "jaka_kargo_msgs/srv/agv_get_current_node.hpp"
+#include "jaka_kargo_msgs/srv/agv_get_battery.hpp"
 
-#include "jagv_interfaces/srv/auto_move.hpp"
-#include "jagv_interfaces/srv/motion_state_control.hpp"
-#include "jagv_interfaces/msg/motion_state.hpp"
+#include <cjson/cJSON.h>
+
+#include <boost/beast/core.hpp>
+#include <boost/beast/http.hpp>
+#include <boost/asio/connect.hpp>
+#include <boost/asio/ip/tcp.hpp>
 
 #include "jaka_kargo_driver/JAKAZuRobot.h"
 #include "jaka_kargo_driver/jkerr.h"
@@ -49,7 +61,20 @@
 #include <thread>
 #include <memory>
 #include <array>
+#include <mutex>
+#include <algorithm>
+#include <limits>
+#include <cmath>
+#include <sstream>
+#include <iomanip>
+#include <vector>
+
 using namespace std;
+using namespace std::chrono_literals;
+namespace beast = boost::beast;
+namespace http = beast::http;
+namespace net = boost::asio;
+using tcp = net::ip::tcp;
 
 const double PI = 3.1415926;
 
@@ -78,9 +103,9 @@ rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr joint_position_pub;
 rclcpp::Publisher<jaka_kargo_msgs::msg::RobotStates>::SharedPtr robot_states_pub;
 rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr agv_cmd_vel_pub;
 rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr agv_odom_sub;
-rclcpp::Subscription<jagv_interfaces::msg::MotionState>::SharedPtr agv_motion_state_sub;
-rclcpp::Client<jagv_interfaces::srv::AutoMove>::SharedPtr agv_auto_move_client;
-rclcpp::Client<jagv_interfaces::srv::MotionStateControl>::SharedPtr agv_motion_ctrl_client;
+
+static string agv_http_host = "127.0.0.1";
+static string agv_http_port = "5002";
 
 struct AgvOdomState
 {
@@ -90,32 +115,146 @@ struct AgvOdomState
     double yaw{0.0};
 };
 
-struct AgvMotionState
-{
-    bool valid{false};
-    uint8_t state_id{255};
-    std::array<uint8_t,4> drive_state{{0,0,0,0}};
-    std::array<uint16_t,4> drive_error_code{{0,0,0,0}};
-    uint32_t wheel_states{0};
-};
-
-
-static std::mutex g_agv_odom_mtx;
+static mutex g_agv_odom_mtx;
 static AgvOdomState g_agv_odom;
 
-static std::mutex g_agv_motion_state_mtx;
-static AgvMotionState g_agv_motion_state;
+static bool string_ends_with(const string& value, const string& suffix)
+{
+    if (suffix.size() > value.size()) {
+        return false;
+    }
+
+    return equal(
+        suffix.rbegin(),
+        suffix.rend(),
+        value.rbegin()
+    );
+}
+
+static string find_agv_global_nav_odom_topic(const rclcpp::Node::SharedPtr& node, double timeout_sec = 10.0)
+{
+    const string expected_type = "nav_msgs/msg/Odometry";
+    const auto start_time = chrono::steady_clock::now();
+    const auto timeout = chrono::duration<double>(timeout_sec);
+
+    while (rclcpp::ok()) {
+        auto topics = node->get_topic_names_and_types();
+
+        vector<string> candidates;
+
+        for (const auto& topic_pair : topics) {
+            const string& topic_name = topic_pair.first;
+            const vector<string>& topic_types = topic_pair.second;
+
+            const bool name_matches =
+                string_ends_with(topic_name, "/agv/global_nav_odom");
+
+            if (!name_matches) {
+                continue;
+            }
+
+            const bool type_matches =
+                find(topic_types.begin(), topic_types.end(), expected_type) != topic_types.end();
+
+            if (type_matches) {
+                candidates.push_back(topic_name);
+            }
+        }
+
+        if (!candidates.empty()) {
+            if (candidates.size() > 1) {
+                RCLCPP_WARN(node->get_logger(),
+                            "Multiple AGV odom topics found. Using first one: %s",
+                            candidates.front().c_str());
+
+                for (const auto& candidate : candidates) {
+                    RCLCPP_WARN(node->get_logger(),
+                                "AGV odom candidate: %s",
+                                candidate.c_str());
+                }
+            }
+
+            return candidates.front();
+        }
+
+        if (chrono::steady_clock::now() - start_time > timeout) {
+            break;
+        }
+
+        rclcpp::spin_some(node);
+        rclcpp::sleep_for(chrono::milliseconds(200));
+    }
+
+    return "";
+}
+
+static string find_agv_cmd_vel_topic(const rclcpp::Node::SharedPtr& node, double timeout_sec = 10.0)
+{
+    const string expected_type = "geometry_msgs/msg/Twist";
+    const auto start_time = chrono::steady_clock::now();
+    const auto timeout = chrono::duration<double>(timeout_sec);
+
+    while (rclcpp::ok()) {
+        auto topics = node->get_topic_names_and_types();
+
+        vector<string> candidates;
+
+        for (const auto& topic_pair : topics) {
+            const string& topic_name = topic_pair.first;
+            const vector<string>& topic_types = topic_pair.second;
+
+            const bool name_matches =
+                string_ends_with(topic_name, "/agv/cmd_vel");
+
+            if (!name_matches) {
+                continue;
+            }
+
+            const bool type_matches =
+                find(topic_types.begin(), topic_types.end(), expected_type) != topic_types.end();
+
+            if (type_matches) {
+                candidates.push_back(topic_name);
+            }
+        }
+
+        if (!candidates.empty()) {
+            if (candidates.size() > 1) {
+                RCLCPP_WARN(node->get_logger(),
+                            "Multiple AGV cmd_vel topics found. Using first one: %s",
+                            candidates.front().c_str());
+
+                for (const auto& candidate : candidates) {
+                    RCLCPP_WARN(node->get_logger(),
+                                "AGV cmd_vel candidate: %s",
+                                candidate.c_str());
+                }
+            }
+
+            return candidates.front();
+        }
+
+        if (chrono::steady_clock::now() - start_time > timeout) {
+            break;
+        }
+
+        rclcpp::spin_some(node);
+        rclcpp::sleep_for(chrono::milliseconds(200));
+    }
+
+    return "";
+}
 
 static double yaw_from_quat(double x, double y, double z, double w)
 {
     const double siny_cosp = 2.0 * (w * z + x * y);
     const double cosy_cosp = 1.0 - 2.0 * (y * y + z * z);
-    return std::atan2(siny_cosp, cosy_cosp);
+    return atan2(siny_cosp, cosy_cosp);
 }
 
 static void agv_odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg)
 {
-    std::lock_guard<std::mutex> lk(g_agv_odom_mtx);
+    lock_guard<mutex> lk(g_agv_odom_mtx);
     g_agv_odom.valid = true;
     g_agv_odom.x = msg->pose.pose.position.x;
     g_agv_odom.y = msg->pose.pose.position.y;
@@ -128,7 +267,7 @@ static void agv_odom_callback(const nav_msgs::msg::Odometry::SharedPtr msg)
 
 static bool get_latest_agv_pose(double &x, double &y, double &yaw)
 {
-    std::lock_guard<std::mutex> lk(g_agv_odom_mtx);
+    lock_guard<mutex> lk(g_agv_odom_mtx);
     if (!g_agv_odom.valid) return false;
     x = g_agv_odom.x;
     y = g_agv_odom.y;
@@ -136,27 +275,719 @@ static bool get_latest_agv_pose(double &x, double &y, double &yaw)
     return true;
 }
 
-static void agv_motion_state_callback(const jagv_interfaces::msg::MotionState::SharedPtr msg)
+struct HttpResponse {
+    int status_code{0};
+    string status_message;
+    map<string, string> headers;
+    string body;
+};
+
+static HttpResponse http_request(
+    const string& method,
+    const string& host,
+    const string& port,
+    const string& target,
+    const map<string, string>& headers = {},
+    const string& body = "")
 {
-    std::lock_guard<std::mutex> lk(g_agv_motion_state_mtx);
-    g_agv_motion_state.valid = true;
-    g_agv_motion_state.state_id = msg->state_id;
-    for (size_t i = 0; i < 4; ++i) {
-        g_agv_motion_state.drive_state[i] = msg->drive_state[i];
-        g_agv_motion_state.drive_error_code[i] = msg->drive_error_code[i];
+    HttpResponse response;
+
+    try {
+        net::io_context ioc;
+        tcp::resolver resolver(ioc);
+        auto const results = resolver.resolve(host, port);
+
+        tcp::socket socket(ioc);
+        net::connect(socket, results.begin(), results.end());
+
+        http::request<http::string_body> req{
+            method == "POST" ? http::verb::post : http::verb::get,
+            target,
+            11
+        };
+
+        req.set(http::field::host, host);
+        req.set(http::field::user_agent, "kargo_moveit_server");
+        req.set(http::field::connection, "close");
+
+        for (const auto& [key, value] : headers) {
+            req.set(key, value);
+        }
+
+        if (!body.empty()) {
+            req.body() = body;
+            req.prepare_payload();
+        }
+
+        http::write(socket, req);
+
+        beast::flat_buffer buffer;
+        http::response<http::dynamic_body> res;
+        http::read(socket, buffer, res);
+
+        response.status_code = res.result_int();
+        response.status_message = string(res.reason());
+
+        for (auto const& field : res) {
+            response.headers[string(field.name_string())] = string(field.value());
+        }
+
+        response.body = beast::buffers_to_string(res.body().data());
+
+        beast::error_code ec;
+        socket.shutdown(tcp::socket::shutdown_both, ec);
     }
-    g_agv_motion_state.wheel_states = msg->wheel_states;
+    catch (const exception& e) {
+        response.status_code = 0;
+        response.status_message = e.what();
+    }
+
+    return response;
+}
+
+static bool http_response_ok(const HttpResponse& res, string* err_msg = nullptr)
+{
+    if (res.status_code != 200) {
+        if (err_msg) {
+            *err_msg = "HTTP status=" + to_string(res.status_code) +
+                       ", message=" + res.status_message;
+        }
+        return false;
+    }
+
+    cJSON* root = cJSON_Parse(res.body.c_str());
+    if (!root) {
+        if (err_msg) *err_msg = "Invalid JSON response: " + res.body;
+        return false;
+    }
+
+    cJSON* code = cJSON_GetObjectItem(root, "code");
+    bool ok = code && cJSON_IsNumber(code) && code->valueint == 0;
+
+    if (!ok && err_msg) {
+        cJSON* msg = cJSON_GetObjectItem(root, "message");
+        if (!msg) msg = cJSON_GetObjectItem(root, "msg");
+
+        if (msg && cJSON_IsString(msg)) {
+            *err_msg = msg->valuestring;
+        } else {
+            *err_msg = "AGV API returned error: " + res.body;
+        }
+    }
+
+    cJSON_Delete(root);
+    return ok;
+}
+
+static string json_escape(const string& input)
+{
+    ostringstream ss;
+    for (char c : input) {
+        switch (c) {
+            case '"':  ss << "\\\""; break;
+            case '\\': ss << "\\\\"; break;
+            case '\n': ss << "\\n";  break;
+            case '\r': ss << "\\r";  break;
+            case '\t': ss << "\\t";  break;
+            default:   ss << c;      break;
+        }
+    }
+    return ss.str();
+}
+
+static bool get_agv_state_values_from_http(
+    const vector<string>& target_keys,
+    map<string, string>& out_values,
+    string* err_msg = nullptr)
+{
+    if (target_keys.empty()) {
+        if (err_msg) {
+            *err_msg = "No target keys provided";
+        }
+        return false;
+    }
+
+    out_values.clear();
+
+    HttpResponse res = http_request(
+        "GET",
+        agv_http_host,
+        agv_http_port,
+        "/HomePage/GetStateInfo"
+    );
+
+    if (res.status_code != 200) {
+        if (err_msg) {
+            *err_msg = "HTTP status=" + to_string(res.status_code) +
+                       ", message=" + res.status_message +
+                       ", body=" + res.body;
+        }
+        return false;
+    }
+
+    cJSON* root = cJSON_Parse(res.body.c_str());
+    if (!root) {
+        if (err_msg) {
+            *err_msg = "Invalid JSON response: " + res.body;
+        }
+        return false;
+    }
+
+    cJSON* code = cJSON_GetObjectItem(root, "code");
+    if (!code || !cJSON_IsNumber(code) || code->valueint != 0) {
+        if (err_msg) {
+            *err_msg = "GetStateInfo returned error: " + res.body;
+        }
+        cJSON_Delete(root);
+        return false;
+    }
+
+    cJSON* data = cJSON_GetObjectItem(root, "data");
+    if (!data || !cJSON_IsArray(data)) {
+        if (err_msg) {
+            *err_msg = "GetStateInfo missing data array: " + res.body;
+        }
+        cJSON_Delete(root);
+        return false;
+    }
+
+    const int n = cJSON_GetArraySize(data);
+
+    for (int i = 0; i < n; ++i) {
+        cJSON* item = cJSON_GetArrayItem(data, i);
+        cJSON* name = cJSON_GetObjectItem(item, "name");
+        cJSON* value = cJSON_GetObjectItem(item, "value");
+
+        if (!name || !value || !cJSON_IsString(name) || !cJSON_IsString(value)) {
+            continue;
+        }
+
+        const string key = name->valuestring;
+        const string val = value->valuestring;
+
+        if (find(target_keys.begin(), target_keys.end(), key) != target_keys.end()) {
+            out_values[key] = val;
+        }
+    }
+
+    cJSON_Delete(root);
+
+    for (const auto& key : target_keys) {
+        if (out_values.find(key) == out_values.end()) {
+            if (err_msg) {
+                *err_msg = "GetStateInfo missing key: " + key;
+            }
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static bool get_agv_state_value_from_http(
+    const string& target_key,
+    string& out_value,
+    string* err_msg = nullptr)
+{
+    map<string, string> values;
+
+    if (!get_agv_state_values_from_http({target_key}, values, err_msg)) {
+        return false;
+    }
+
+    out_value = values[target_key];
+    return true;
+}
+
+static bool get_agv_current_map_from_http(
+    string& map_name,
+    string* err_msg = nullptr)
+{
+    return get_agv_state_value_from_http("MapName", map_name, err_msg);
+}
+
+static bool send_agv_map_change_http(
+    const string& map_name,
+    string* err_msg = nullptr,
+    double timeout_sec = 10.0,
+    int poll_period_ms = 500)
+{
+    if (map_name.empty()) {
+        if (err_msg) {
+            *err_msg = "Map name is empty";
+        }
+        return false;
+    }
+
+    // 1. If already using this map, return success directly.
+    string current_map;
+    string read_err;
+    if (get_agv_current_map_from_http(current_map, &read_err)) {
+        if (current_map == map_name) {
+            RCLCPP_INFO(rclcpp::get_logger("agv_http"),
+                        "AGV already using map '%s', skip PostMapChange",
+                        map_name.c_str());
+            return true;
+        }
+    } else {
+        RCLCPP_WARN(rclcpp::get_logger("agv_http"),
+                    "Could not read current AGV map before map change: %s",
+                    read_err.c_str());
+    }
+
+    // 2. Send map change request.
+    map<string, string> headers;
+    headers["Content-Type"] = "application/json";
+    string body = "{\"Name\":\"" + json_escape(map_name) + "\"}";
+    HttpResponse res = http_request(
+        "POST",
+        agv_http_host,
+        agv_http_port,
+        "/HomePage/PostMapChange",
+        headers,
+        body
+    );
+    string post_err;
+    const bool post_ok = http_response_ok(res, &post_err);
+    RCLCPP_DEBUG(rclcpp::get_logger("agv_http"),
+                "PostMapChange response: status=%d, message=%s, body=%s",
+                res.status_code,
+                res.status_message.c_str(),
+                res.body.c_str());
+
+    // 3. Poll GetStateInfo to confirm whether the map eventually changed.
+    const auto start_time = chrono::steady_clock::now();
+    const auto timeout = chrono::duration<double>(timeout_sec);
+
+    while (rclcpp::ok()) {
+        string latest_map;
+        string latest_err;
+
+        if (get_agv_current_map_from_http(latest_map, &latest_err)) {
+            if (latest_map == map_name) {
+                RCLCPP_INFO(rclcpp::get_logger("agv_http"),
+                            "AGV map change confirmed: %s", map_name.c_str());
+                return true;
+            }
+            RCLCPP_INFO(rclcpp::get_logger("agv_http"),
+                        "Waiting for AGV map change: current=%s, target=%s",
+                        latest_map.c_str(), map_name.c_str());
+        } else {
+            RCLCPP_WARN(rclcpp::get_logger("agv_http"),
+                        "Failed to read AGV map while waiting: %s",
+                        latest_err.c_str());
+        }
+
+        if (chrono::steady_clock::now() - start_time > timeout) {
+            break;
+        }
+
+        rclcpp::sleep_for(chrono::milliseconds(poll_period_ms));
+    }
+
+    if (err_msg) {
+        if (!post_ok) {
+            *err_msg = "PostMapChange failed or not confirmed. post_error=" + post_err;
+        } else {
+            *err_msg = "PostMapChange returned success but MapName did not update to target within timeout";
+        }
+    }
+
+    return false;
+}
+
+static bool send_agv_auto_move_http(
+    double target_x_mm,
+    double target_y_mm,
+    double target_yaw_deg,
+    int linear_speed_mmps,
+    string* err_msg = nullptr)
+{
+    if (!isfinite(target_x_mm) ||
+        !isfinite(target_y_mm) ||
+        !isfinite(target_yaw_deg) ||
+        linear_speed_mmps <= 0)
+    {
+        if (err_msg) {
+            *err_msg = "Invalid AGV SetAutoMove input";
+        }
+        return false;
+    }
+
+    ostringstream body;
+    body << "{"
+         << "\"PosX\":" << target_x_mm << ","
+         << "\"PosY\":" << target_y_mm << ","
+         << "\"PosAng\":" << target_yaw_deg << ","
+         << "\"Speed\":" << linear_speed_mmps
+         << "}";
+
+    map<string, string> headers;
+    headers["Content-Type"] = "application/json";
+
+    RCLCPP_DEBUG(rclcpp::get_logger("agv_http"),
+                "SetAutoMove request body: %s",
+                body.str().c_str());
+
+    HttpResponse res = http_request(
+        "POST",
+        agv_http_host,
+        agv_http_port,
+        "/MapPage/SetAutoMove",
+        headers,
+        body.str()
+    );
+
+    RCLCPP_DEBUG(rclcpp::get_logger("agv_http"),
+                "SetAutoMove response: status=%d, message=%s, body=%s",
+                res.status_code,
+                res.status_message.c_str(),
+                res.body.c_str());
+
+    return http_response_ok(res, err_msg);
+}
+
+static bool send_agv_state_code_http(
+    int state_code,
+    string* err_msg = nullptr)
+{
+    if (state_code < 1 || state_code > 3) {
+        if (err_msg) {
+            *err_msg = "Invalid StateCode. Expected 1=pause, 2=continue, 3=stop";
+        }
+        return false;
+    }
+
+    ostringstream body;
+    body << "{"
+         << "\"StateCode\":" << state_code
+         << "}";
+
+    map<string, string> headers;
+    headers["Content-Type"] = "application/json";
+
+    RCLCPP_DEBUG(rclcpp::get_logger("agv_http"),
+                "SetStateCode request body: %s",
+                body.str().c_str());
+
+    HttpResponse res = http_request(
+        "POST",
+        agv_http_host,
+        agv_http_port,
+        "/MapPage/SetStateCode",
+        headers,
+        body.str()
+    );
+
+    RCLCPP_DEBUG(rclcpp::get_logger("agv_http"),
+                "SetStateCode response: status=%d, message=%s, body=%s",
+                res.status_code,
+                res.status_message.c_str(),
+                res.body.c_str());
+
+    return http_response_ok(res, err_msg);
+}
+
+struct AgvHttpState
+{
+    bool valid{false};
+    int motion_state{-1};
+    int wheel_state{-1};
+};
+
+static bool get_agv_state_from_http(
+    AgvHttpState& out,
+    string* err_msg = nullptr)
+{
+    map<string, string> values;
+
+    if (!get_agv_state_values_from_http(
+            {"MotionState", "WheelState"},
+            values,
+            err_msg))
+    {
+        return false;
+    }
+
+    try {
+        out.motion_state = stoi(values["MotionState"]);
+        out.wheel_state = stoi(values["WheelState"]);
+    } catch (...) {
+        if (err_msg) {
+            *err_msg = "Invalid MotionState or WheelState value. MotionState=" +
+                       values["MotionState"] +
+                       ", WheelState=" +
+                       values["WheelState"];
+        }
+        return false;
+    }
+
+    out.valid = true;
+    return true;
+}
+
+static bool send_agv_post_map_location_http(
+    int node_id,
+    string* err_msg = nullptr)
+{
+    if (node_id <= 0) {
+        if (err_msg) {
+            *err_msg = "Invalid Node. Expected Node > 0";
+        }
+        return false;
+    }
+
+    ostringstream body;
+    body << "{"
+         << "\"Node\":" << node_id
+         << "}";
+
+    map<string, string> headers;
+    headers["Content-Type"] = "application/json";
+
+    RCLCPP_DEBUG(rclcpp::get_logger("agv_http"),
+                "PostMapLocation request body: %s",
+                body.str().c_str());
+
+    HttpResponse res = http_request(
+        "POST",
+        agv_http_host,
+        agv_http_port,
+        "/HomePage/PostMapLocation",
+        headers,
+        body.str()
+    );
+
+    RCLCPP_DEBUG(rclcpp::get_logger("agv_http"),
+                "PostMapLocation response: status=%d, message=%s, body=%s",
+                res.status_code,
+                res.status_message.c_str(),
+                res.body.c_str());
+
+    return http_response_ok(res, err_msg);
+}
+
+static bool send_agv_post_map_navigation_http(
+    int node_id,
+    int speed_mmps,
+    string* err_msg = nullptr)
+{
+    if (node_id <= 0) {
+        if (err_msg) {
+            *err_msg = "Invalid Node. Expected Node > 0";
+        }
+        return false;
+    }
+
+    if (speed_mmps <= 0) {
+        if (err_msg) {
+            *err_msg = "Invalid Speed. Expected Speed > 0 mm/s";
+        }
+        return false;
+    }
+
+    ostringstream body;
+    body << "{"
+         << "\"Node\":" << node_id << ","
+         << "\"Speed\":" << speed_mmps
+         << "}";
+
+    map<string, string> headers;
+    headers["Content-Type"] = "application/json";
+
+    RCLCPP_DEBUG(rclcpp::get_logger("agv_http"),
+                "PostMapNavigation request body: %s",
+                body.str().c_str());
+
+    HttpResponse res = http_request(
+        "POST",
+        agv_http_host,
+        agv_http_port,
+        "/HomePage/PostMapNavigation",
+        headers,
+        body.str()
+    );
+
+    RCLCPP_DEBUG(rclcpp::get_logger("agv_http"),
+                "PostMapNavigation response: status=%d, message=%s, body=%s",
+                res.status_code,
+                res.status_message.c_str(),
+                res.body.c_str());
+
+    return http_response_ok(res, err_msg);
+}
+
+static bool send_agv_set_map_location_http(
+    double pos_x_mm,
+    double pos_y_mm,
+    double pos_ang_deg,
+    string* err_msg = nullptr)
+{
+    if (!isfinite(pos_x_mm) ||
+        !isfinite(pos_y_mm) ||
+        !isfinite(pos_ang_deg))
+    {
+        if (err_msg) {
+            *err_msg = "Invalid SetMapLocation input";
+        }
+        return false;
+    }
+
+    ostringstream body;
+    body << "{"
+         << "\"PosX\":" << pos_x_mm << ","
+         << "\"PosY\":" << pos_y_mm << ","
+         << "\"PosAng\":" << pos_ang_deg
+         << "}";
+
+    map<string, string> headers;
+    headers["Content-Type"] = "application/json";
+
+    RCLCPP_DEBUG(rclcpp::get_logger("agv_http"),
+                "SetMapLocation request body: %s",
+                body.str().c_str());
+
+    HttpResponse res = http_request(
+        "POST",
+        agv_http_host,
+        agv_http_port,
+        "/MapPage/SetMapLocation",
+        headers,
+        body.str()
+    );
+
+    RCLCPP_DEBUG(rclcpp::get_logger("agv_http"),
+                "SetMapLocation response: status=%d, message=%s, body=%s",
+                res.status_code,
+                res.status_message.c_str(),
+                res.body.c_str());
+
+    return http_response_ok(res, err_msg);
+}
+
+static bool get_agv_current_node_from_http(
+    int& node_id,
+    string* err_msg = nullptr)
+{
+    string value;
+
+    if (!get_agv_state_value_from_http("PosNode", value, err_msg)) {
+        return false;
+    }
+
+    try {
+        node_id = stoi(value);
+    } catch (...) {
+        if (err_msg) {
+            *err_msg = "Invalid PosNode value: " + value;
+        }
+        return false;
+    }
+
+    return true;
+}
+
+struct AgvBatteryState
+{
+    bool main_valid{false};
+    bool sub_valid{false};
+
+    double main_percent{-1.0};
+    double sub_percent{-1.0};
+
+    double battery_percent{-1.0};
+    string active_channel{"none"};
+};
+
+static bool parse_agv_battery_channel(
+    const string& value,
+    double& percent)
+{
+    double raw = -1.0;
+
+    try {
+        raw = stod(value);
+    } catch (...) {
+        percent = -1.0;
+        return false;
+    }
+
+    // 65535 means this battery channel is not connected / invalid.
+    if (raw == 65535.0 || raw < 0.0 || raw > 100.0) {
+        percent = -1.0;
+        return false;
+    }
+
+    percent = raw;
+    return true;
+}
+
+static bool get_agv_battery_from_http(
+    AgvBatteryState& battery,
+    string* err_msg = nullptr)
+{
+    map<string, string> values;
+
+    if (!get_agv_state_values_from_http(
+            {"MainBattery", "SubBattery"},
+            values,
+            err_msg))
+    {
+        return false;
+    }
+
+    battery.main_valid = parse_agv_battery_channel(
+        values["MainBattery"],
+        battery.main_percent
+    );
+
+    battery.sub_valid = parse_agv_battery_channel(
+        values["SubBattery"],
+        battery.sub_percent
+    );
+
+    if (battery.main_valid && battery.sub_valid) {
+        // Both channels have valid batteries.
+        // Use the higher value as the effective battery percentage.
+        battery.battery_percent = max(battery.main_percent, battery.sub_percent);
+        battery.active_channel = "both";
+        return true;
+    }
+
+    if (battery.main_valid) {
+        battery.battery_percent = battery.main_percent;
+        battery.active_channel = "main";
+        return true;
+    }
+
+    if (battery.sub_valid) {
+        battery.battery_percent = battery.sub_percent;
+        battery.active_channel = "sub";
+        return true;
+    }
+
+    battery.battery_percent = -1.0;
+    battery.active_channel = "none";
+
+    if (err_msg) {
+        *err_msg = "No valid AGV battery channel. MainBattery=" +
+                   values["MainBattery"] +
+                   ", SubBattery=" +
+                   values["SubBattery"];
+    }
+
+    return false;
 }
 
 // Global EDG broadcast IP used by edg_init calls
-static std::string edg_init_ip = "255.255.255.255";
+static string edg_init_ip = "255.255.255.255";
 
 /// Make EDG broadcast IP by replacing last IPv4 octet with 255.
 /// If input doesn't contain a '.' (not IPv4), returns input unchanged.
-static std::string make_edg_bcast(const std::string &ip)
+static string make_edg_bcast(const string &ip)
 {
     auto last_oct = ip.find_last_of('.');
-    if (last_oct == std::string::npos) {
+    if (last_oct == string::npos) {
         // not an IPv4-like string — return unchanged (fallback)
         return ip;
     }
@@ -1289,103 +2120,144 @@ bool multi_move_ext_callback(
 }
 
 
-bool agv_auto_move_callback(
-    const std::shared_ptr<jagv_interfaces::srv::AutoMove::Request> req,
-    std::shared_ptr<jagv_interfaces::srv::AutoMove::Response> res)
+bool agv_get_current_map_callback(
+    const shared_ptr<jaka_kargo_msgs::srv::AgvGetCurrentMap::Request> /*req*/,
+    shared_ptr<jaka_kargo_msgs::srv::AgvGetCurrentMap::Response> res)
 {
-    if (!agv_auto_move_client) {
-        res->ret_code = -1;
-        res->ret_msg = "AGV auto_move client not initialized";
+    string map_name;
+    string err_msg;
+
+    const bool ok = get_agv_current_map_from_http(map_name, &err_msg);
+
+    if (!ok) {
+        res->ret = -1;
+        res->message = "HTTP GetStateInfo failed: " + err_msg;
+        res->map_name = "";
+
+        RCLCPP_ERROR(rclcpp::get_logger("agv_get_current_map_callback"),
+                     "AGV get current map failed: %s", res->message.c_str());
         return false;
     }
 
-    if (!agv_auto_move_client->wait_for_service(std::chrono::seconds(2))) {
-        res->ret_code = -1;
-        res->ret_msg = "AGV auto_move service not available";
+    res->ret = 1;
+    res->message = "Current AGV map read successfully";
+    res->map_name = map_name;
+
+    RCLCPP_INFO(rclcpp::get_logger("agv_get_current_map_callback"),
+                "Current AGV map: %s", map_name.c_str());
+
+    return true;
+}
+
+
+bool agv_map_change_callback(
+    const shared_ptr<jaka_kargo_msgs::srv::AgvMapChange::Request> req,
+    shared_ptr<jaka_kargo_msgs::srv::AgvMapChange::Response> res)
+{
+    if (req->map_name.empty()) {
+        res->ret = -1;
+        res->message = "Map name is empty";
+
+        RCLCPP_ERROR(rclcpp::get_logger("agv_map_change_callback"),
+                     "%s", res->message.c_str());
         return false;
     }
 
-    auto forward_req = std::make_shared<jagv_interfaces::srv::AutoMove::Request>();
-    *forward_req = *req;
+    string err_msg;
+    const bool ok = send_agv_map_change_http(
+        req->map_name,
+        &err_msg,
+        10.0,   // timeout_sec
+        500     // poll_period_ms
+    );
 
-    auto future = agv_auto_move_client->async_send_request(forward_req);
+    if (!ok) {
+        res->ret = -1;
+        res->message = "HTTP PostMapChange failed: " + err_msg;
 
-    if (future.wait_for(std::chrono::seconds(10)) != std::future_status::ready) {
-        res->ret_code = -1;
-        res->ret_msg = "Timeout waiting for AGV auto_move response";
+        RCLCPP_ERROR(rclcpp::get_logger("agv_map_change_callback"),
+                     "AGV map change failed: %s", res->message.c_str());
         return false;
     }
 
-    auto agv_res = future.get();
-    if (!agv_res) {
-        res->ret_code = -1;
-        res->ret_msg = "Null response from AGV auto_move";
-        return false;
-    }
+    res->ret = 1;
+    res->message = "HTTP PostMapChange executed and confirmed";
 
-    *res = *agv_res;
-    if (res->ret_code == 0){
-        RCLCPP_INFO(rclcpp::get_logger("agv_auto_move_callback"), "agv_auto_move executed");
-        return true;
-    } else {
+    RCLCPP_INFO(rclcpp::get_logger("agv_map_change_callback"),
+                "AGV map change executed: map_name=%s", req->map_name.c_str());
+
+    return true;
+}
+
+
+bool agv_auto_move_callback(
+    const shared_ptr<jaka_kargo_msgs::srv::AgvAutoMove::Request> req,
+    shared_ptr<jaka_kargo_msgs::srv::AgvAutoMove::Response> res)
+{
+    string err_msg;
+
+    const bool ok = send_agv_auto_move_http(
+        req->target_x,
+        req->target_y,
+        req->target_yaw,
+        req->speed,
+        &err_msg
+    );
+
+    if (!ok) {
+        res->ret = -1;
+        res->message = "HTTP SetAutoMove failed: " + err_msg;
+
         RCLCPP_ERROR(rclcpp::get_logger("agv_auto_move_callback"),
-                 "agv_auto_move failed: ret_code=%d, ret_msg=%s",
-                 res->ret_code, res->ret_msg.c_str());
+                     "AGV AutoMove failed: %s", res->message.c_str());
         return false;
     }
+
+    res->ret = 1;
+    res->message = "HTTP SetAutoMove executed";
+
+    RCLCPP_INFO(rclcpp::get_logger("agv_auto_move_callback"),
+                "AGV AutoMove executed: target=(%.3f mm, %.3f mm, %.3f deg), speed=%d mm/s",
+                req->target_x,
+                req->target_y,
+                req->target_yaw,
+                req->speed);
+
+    return true;
 }
 
 
 bool agv_motion_state_control_callback(
-    const std::shared_ptr<jagv_interfaces::srv::MotionStateControl::Request> req,
-    std::shared_ptr<jagv_interfaces::srv::MotionStateControl::Response> res)
+    const shared_ptr<jaka_kargo_msgs::srv::AgvMotionStateControl::Request> req,
+    shared_ptr<jaka_kargo_msgs::srv::AgvMotionStateControl::Response> res)
 {
-    if (!agv_motion_ctrl_client) {
-        res->ret_code = -1;
-        res->ret_msg = "AGV motion_state_control client not initialized";
-        return false;
-    }
+    const int state_code = static_cast<int>(req->state_code);
 
-    if (!agv_motion_ctrl_client->wait_for_service(std::chrono::seconds(2))) {
-        res->ret_code = -1;
-        res->ret_msg = "AGV motion_state_control service not available";
-        return false;
-    }
+    string err_msg;
+    const bool ok = send_agv_state_code_http(state_code, &err_msg);
 
-    auto forward_req = std::make_shared<jagv_interfaces::srv::MotionStateControl::Request>();
-    *forward_req = *req;
+    if (!ok) {
+        res->ret = -1;
+        res->message = "HTTP SetStateCode failed: " + err_msg;
 
-    auto future = agv_motion_ctrl_client->async_send_request(forward_req);
-
-    if (future.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
-        res->ret_code = -1;
-        res->ret_msg = "Timeout waiting for AGV motion_state_control response";
-        return false;
-    }
-
-    auto agv_res = future.get();
-    if (!agv_res) {
-        res->ret_code = -1;
-        res->ret_msg = "Null response from AGV motion_state_control";
-        return false;
-    }
-
-    *res = *agv_res;
-    if (res->ret_code == 0){
-        RCLCPP_INFO(rclcpp::get_logger("agv_motion_state_control_callback"), "agv_motion_state_control executed");
-        return true;
-    } else {
         RCLCPP_ERROR(rclcpp::get_logger("agv_motion_state_control_callback"),
-                 "agv_motion_state_control failed: ret_code=%d, ret_msg=%s",
-                 res->ret_code, res->ret_msg.c_str());
+                     "AGV set state code failed: %s", res->message.c_str());
         return false;
     }
+
+    res->ret = 1;
+    res->message = "HTTP SetStateCode executed";
+
+    RCLCPP_INFO(rclcpp::get_logger("agv_motion_state_control_callback"),
+                "AGV set state code executed: StateCode=%d", state_code);
+
+    return true;
 }
 
 
 bool agv_cmd_vel_callback(
-    const std::shared_ptr<jaka_kargo_msgs::srv::AgvCmdVel::Request> req,
-    std::shared_ptr<jaka_kargo_msgs::srv::AgvCmdVel::Response> res)
+    const shared_ptr<jaka_kargo_msgs::srv::AgvCmdVel::Request> req,
+    shared_ptr<jaka_kargo_msgs::srv::AgvCmdVel::Response> res)
 {
     if (!agv_cmd_vel_pub) {
         res->ret = -1;
@@ -1393,9 +2265,9 @@ bool agv_cmd_vel_callback(
         return false;
     }
 
-    if (req->publish_rate <= 10.0) {
+    if (req->duration > 0.0 && req->publish_rate <= 10.0) {
         res->ret = -1;
-        res->message = "publish_rate must be > 10 Hz";
+        res->message = "publish_rate must be > 10 Hz when duration > 0";
         return false;
     }
 
@@ -1418,28 +2290,220 @@ bool agv_cmd_vel_callback(
         agv_cmd_vel_pub->publish(cmd);
         res->ret = 1;
         res->message = "Published one cmd_vel message";
+        RCLCPP_INFO(rclcpp::get_logger("agv_cmd_vel_callback"),
+                    "Published one AGV cmd_vel successfully: linear_x=%.3f, linear_y=%.3f, angular_z=%.3f",
+                    req->linear_x,
+                    req->linear_y,
+                    req->angular_z);
         return true;
     }
 
     rclcpp::WallRate rate(req->publish_rate);
-    const auto t_end = std::chrono::steady_clock::now() +
-                       std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-                           std::chrono::duration<double>(req->duration));
+    const auto t_end = chrono::steady_clock::now() +
+                       chrono::duration_cast<chrono::steady_clock::duration>(
+                           chrono::duration<double>(req->duration));
 
-    while (rclcpp::ok() && std::chrono::steady_clock::now() < t_end) {
+    int publish_count = 0;
+    while (rclcpp::ok() && chrono::steady_clock::now() < t_end) {
         agv_cmd_vel_pub->publish(cmd);
+        publish_count++;
         rate.sleep();
     }
 
     if (req->stop_after) {
         geometry_msgs::msg::Twist stop_cmd{};
         agv_cmd_vel_pub->publish(stop_cmd);
+        RCLCPP_INFO(rclcpp::get_logger("agv_cmd_vel_callback"),
+                    "Published AGV stop cmd_vel after velocity stream for %.3f duration", req->duration);       
     }
 
     res->ret = 1;
     res->message = "Published cmd_vel stream";
+    RCLCPP_INFO(rclcpp::get_logger("agv_cmd_vel_callback"),
+                "Published AGV cmd_vel stream successfully: linear_x=%.3f, linear_y=%.3f, angular_z=%.3f, duration=%.3f s, rate=%.3f Hz, count=%d, stop_after=%d",
+                req->linear_x,
+                req->linear_y,
+                req->angular_z,
+                req->duration,
+                req->publish_rate,
+                publish_count,
+                req->stop_after ? 1 : 0);
     return true;
 }
+
+
+bool agv_post_map_location_callback(
+    const shared_ptr<jaka_kargo_msgs::srv::AgvPostMapLocation::Request> req,
+    shared_ptr<jaka_kargo_msgs::srv::AgvPostMapLocation::Response> res)
+{
+    string err_msg;
+
+    const bool ok = send_agv_post_map_location_http(
+        req->node,
+        &err_msg
+    );
+
+    if (!ok) {
+        res->ret = -1;
+        res->message = "HTTP PostMapLocation failed: " + err_msg;
+
+        RCLCPP_ERROR(rclcpp::get_logger("agv_post_map_location_callback"),
+                     "AGV set location node = %d failed: %s", req->node, res->message.c_str());
+        return false;
+    }
+
+    res->ret = 1;
+    res->message = "HTTP PostMapLocation executed";
+
+    RCLCPP_INFO(rclcpp::get_logger("agv_post_map_location_callback"),
+                "AGV set location Node=%d succeeded",
+                req->node);
+
+    return true;
+}
+
+
+bool agv_post_map_navigation_callback(
+    const shared_ptr<jaka_kargo_msgs::srv::AgvPostMapNavigation::Request> req,
+    shared_ptr<jaka_kargo_msgs::srv::AgvPostMapNavigation::Response> res)
+{
+    string err_msg;
+
+    const bool ok = send_agv_post_map_navigation_http(
+        req->node,
+        req->speed,
+        &err_msg
+    );
+
+    if (!ok) {
+        res->ret = -1;
+        res->message = "HTTP PostMapNavigation failed: " + err_msg;
+
+        RCLCPP_ERROR(rclcpp::get_logger("agv_post_map_navigation_callback"),
+                     "AGV navigate to node = %d failed: %s", req->node, res->message.c_str());
+        return false;
+    }
+
+    res->ret = 1;
+    res->message = "HTTP PostMapNavigation executed";
+
+    RCLCPP_INFO(rclcpp::get_logger("agv_post_map_navigation_callback"),
+                "AGV navigate to Node=%d, Speed=%d mm/s succeeded",
+                req->node,
+                req->speed);
+
+    return true;
+}
+
+
+bool agv_set_map_location_callback(
+    const shared_ptr<jaka_kargo_msgs::srv::AgvSetMapLocation::Request> req,
+    shared_ptr<jaka_kargo_msgs::srv::AgvSetMapLocation::Response> res)
+{
+    string err_msg;
+
+    const bool ok = send_agv_set_map_location_http(
+        req->pos_x,
+        req->pos_y,
+        req->pos_ang,
+        &err_msg
+    );
+
+    if (!ok) {
+        res->ret = -1;
+        res->message = "HTTP SetMapLocation failed: " + err_msg;
+
+        RCLCPP_ERROR(rclcpp::get_logger("agv_set_map_location_callback"),
+                     "AGV set map location failed: %s", res->message.c_str());
+        return false;
+    }
+
+    res->ret = 1;
+    res->message = "HTTP SetMapLocation executed";
+
+    RCLCPP_INFO(rclcpp::get_logger("agv_set_map_location_callback"),
+                "AGV set map location executed: PosX=%.3f mm, PosY=%.3f mm, PosAng=%.3f deg",
+                req->pos_x,
+                req->pos_y,
+                req->pos_ang);
+
+    return true;
+}
+
+
+bool agv_get_current_node_callback(
+    const shared_ptr<jaka_kargo_msgs::srv::AgvGetCurrentNode::Request> /*req*/,
+    shared_ptr<jaka_kargo_msgs::srv::AgvGetCurrentNode::Response> res)
+{
+    int node_id = 0;
+    string err_msg;
+
+    const bool ok = get_agv_current_node_from_http(node_id, &err_msg);
+
+    if (!ok) {
+        res->ret = -1;
+        res->message = "HTTP GetStateInfo PosNode read failed: " + err_msg;
+        res->node = -1;
+
+        RCLCPP_ERROR(rclcpp::get_logger("agv_get_current_node_callback"),
+                     "AGV current node read failed: %s", res->message.c_str());
+
+        return false;
+    }
+
+    res->ret = 1;
+    res->node = node_id;
+    res->message = "Current AGV node read successfully";
+
+    RCLCPP_INFO(rclcpp::get_logger("agv_get_current_node_callback"),
+                "Current AGV PosNode: %d", node_id);
+
+    return true;
+}
+
+
+bool agv_get_battery_callback(
+    const shared_ptr<jaka_kargo_msgs::srv::AgvGetBattery::Request> /*req*/,
+    shared_ptr<jaka_kargo_msgs::srv::AgvGetBattery::Response> res)
+{
+    AgvBatteryState battery{};
+    string err_msg;
+
+    const bool ok = get_agv_battery_from_http(battery, &err_msg);
+
+    res->main_battery_percent = battery.main_percent;
+    res->main_battery_valid = battery.main_valid;
+
+    res->sub_battery_percent = battery.sub_percent;
+    res->sub_battery_valid = battery.sub_valid;
+
+    res->battery_percent = battery.battery_percent;
+    res->active_channel = battery.active_channel;
+
+    if (!ok) {
+        res->ret = -1;
+        res->message = "HTTP GetStateInfo battery read failed: " + err_msg;
+
+        RCLCPP_ERROR(rclcpp::get_logger("agv_get_battery_callback"),
+                     "AGV battery read failed: %s", res->message.c_str());
+        return false;
+    }
+
+    res->ret = 1;
+    res->message = "AGV battery read successfully";
+
+    RCLCPP_INFO(rclcpp::get_logger("agv_get_battery_callback"),
+                "AGV battery: effective=%.1f%%, active_channel=%s, Main=%.1f%% valid=%d, Sub=%.1f%% valid=%d",
+                battery.battery_percent,
+                battery.active_channel.c_str(),
+                battery.main_percent,
+                battery.main_valid ? 1 : 0,
+                battery.sub_percent,
+                battery.sub_valid ? 1 : 0);
+
+    return true;
+}
+
 
 // TCP pose via EDG (per arm). Publishes position (mm) + RPY (deg in angular fields).
 void tool_position_callback(
@@ -1533,20 +2597,20 @@ void joint_position_callback(
     }
 
     // AGV pose from odom
-    double agv_x = std::numeric_limits<double>::quiet_NaN();
-    double agv_y = std::numeric_limits<double>::quiet_NaN();
-    double agv_yaw = std::numeric_limits<double>::quiet_NaN();
+    double agv_x = numeric_limits<double>::quiet_NaN();
+    double agv_y = numeric_limits<double>::quiet_NaN();
+    double agv_yaw = numeric_limits<double>::quiet_NaN();
     const bool agv_ok = get_latest_agv_pose(agv_x, agv_y, agv_yaw);
     if (!agv_ok) {
-        RCLCPP_ERROR(rclcpp::get_logger("joint_position_callback"),
+        RCLCPP_WARN(rclcpp::get_logger("joint_position_callback"),
                      "Failed to read AGV pose: no valid cached odom from /global_nav_odom yet");
     }
     joint_position.name.push_back("agv_x");
-    joint_position.position.push_back(agv_ok ? agv_x : std::numeric_limits<double>::quiet_NaN());
+    joint_position.position.push_back(agv_ok ? agv_x : numeric_limits<double>::quiet_NaN());
     joint_position.name.push_back("agv_y");
-    joint_position.position.push_back(agv_ok ? agv_y : std::numeric_limits<double>::quiet_NaN());
+    joint_position.position.push_back(agv_ok ? agv_y : numeric_limits<double>::quiet_NaN());
     joint_position.name.push_back("agv_yaw");
-    joint_position.position.push_back(agv_ok ? agv_yaw : std::numeric_limits<double>::quiet_NaN());
+    joint_position.position.push_back(agv_ok ? agv_yaw : numeric_limits<double>::quiet_NaN());
 
     joint_position.header.stamp = rclcpp::Clock().now();
     joint_position_pub->publish(joint_position);
@@ -1653,44 +2717,49 @@ void robot_states_callback(const rclcpp::Publisher<jaka_kargo_msgs::msg::RobotSt
 
     // ---------------- AGV state ----------------
     {
-        std::lock_guard<std::mutex> lk(g_agv_motion_state_mtx);
-        if (!g_agv_motion_state.valid) {
-            RCLCPP_ERROR(rclcpp::get_logger("robot_states_callback"), 
-                        "agv_motion_state_callback hasn't received any /motion_state message yet");
+        AgvHttpState agv_state{};
+        string agv_err;
+
+        if (!get_agv_state_from_http(agv_state, &agv_err)) {
+            RCLCPP_ERROR(rclcpp::get_logger("robot_states_callback"),
+                        "Failed to read AGV state from HTTP GetStateInfo: %s",
+                        agv_err.c_str());
             ok = false;
         } else {
-            const uint8_t state_id = g_agv_motion_state.state_id;
-            const uint32_t wheel_states = g_agv_motion_state.wheel_states;
-            robot_states.agv_state_id = state_id;
-            robot_states.agv_idle        = (state_id == 0);
-            robot_states.agv_manual_move = (state_id == 1);
-            robot_states.agv_navigation  = (state_id == 2);
-            robot_states.agv_disabled    = (state_id == 3);
-            robot_states.agv_unknown     = !(state_id == 0 || state_id == 1 || state_id == 2 || state_id == 3);
-            robot_states.agv_drive_state.clear();
-            robot_states.agv_drive_error_code.clear();
-            bool all_drive_enabled = true;
-            for (size_t i = 0; i < 4; ++i) {
-                const uint8_t ds = g_agv_motion_state.drive_state[i];
+            const int motion_state = agv_state.motion_state;
+            const int wheel_state = agv_state.wheel_state;
 
-                robot_states.agv_drive_state.push_back(g_agv_motion_state.drive_state[i]);
-                robot_states.agv_drive_error_code.push_back(g_agv_motion_state.drive_error_code[i]);
+            robot_states.agv_motion_state = motion_state;
+            robot_states.agv_wheel_state = wheel_state;
 
-                const bool drv_enable = (ds == 1);
+            // MotionState:
+            robot_states.agv_idle               = (motion_state == 0);      // 0 idle
+            robot_states.agv_manual_move        = (motion_state == 1);      // 1 manual move
+            robot_states.agv_navigation         = (motion_state == 2);      // 2 auto move
+            robot_states.agv_disabled           = (motion_state == 3);      // 3 disabled
+            robot_states.agv_obstacle_avoidance = (motion_state == 4);      // 4 obstacle avoidance
+            robot_states.agv_unknown            = (motion_state == -1);     // -1 unknown
 
-                all_drive_enabled = all_drive_enabled && drv_enable;
-            }
-            robot_states.agv_all_drive_enabled = all_drive_enabled;
-            robot_states.agv_estoping               = (wheel_states & (1u << 0)) != 0;
-            robot_states.agv_touching               = (wheel_states & (1u << 1)) != 0;
-            robot_states.agv_release_brake          = (wheel_states & (1u << 2)) != 0;
-            robot_states.agv_safety_board_heartbeat = (wheel_states & (1u << 3)) != 0;
-            robot_states.agv_reset                  = (wheel_states & (1u << 4)) != 0;
-            robot_states.agv_pausing                = (wheel_states & (1u << 5)) != 0;
-            robot_states.agv_stoping                = (wheel_states & (1u << 6)) != 0;
-            robot_states.agv_charging               = (wheel_states & (1u << 7)) != 0;
+            // AGV is enabled/ready when MotionState == 0 and WheelState == 10
+            robot_states.agv_enabled = (motion_state == 0 && wheel_state == 10);
+
+            // WheelState:
+            robot_states.agv_wheel_idle    = (wheel_state == 10);       // 10 idle
+            robot_states.agv_estop         = (wheel_state == 0);        // 0 emergency stop
+            robot_states.agv_collision     = (wheel_state == 1);        // 1 touching edge
+            robot_states.agv_release_brake = (wheel_state == 2);        // 2 release brake
+            robot_states.agv_reset         = (wheel_state == 4);        // 4 reset
+            robot_states.agv_pausing       = (wheel_state == 5);        // 5 pause  
+            robot_states.agv_stoping       = (wheel_state == 6);        // 6 stop
+            robot_states.agv_charging      = (wheel_state == 7);        // 7 charging
+            robot_states.agv_moving        = (wheel_state == 8);        // 8 moving
+            robot_states.agv_soft_pause    = (wheel_state == 9);        // 9 soft pause
+            robot_states.agv_soft_resume = (wheel_state == 11);         // 11 soft resume
+            robot_states.agv_soft_estop    = (wheel_state == 12);       // 12 soft emergency stop
+            robot_states.agv_wheel_unknown = (wheel_state == -1);       // -1 unknown
         }
     }
+
 
     // Only publish if all reads succeeded
     if (!ok) {
@@ -1731,7 +2800,7 @@ void get_connect_state()
             {
                 // At least one EDG stream is down — don’t publish EDG-based topics this tick
                 RCLCPP_ERROR(rclcpp::get_logger("get_connect_state"),
-                            "Connection error or edg_get_stat failed: %s", mapErr[ret].c_str());
+                            "Connection error or edg_get_stat failed: left=%d right=%d", ret_edg_left, ret_edg_right);
             }
             else 
             {
@@ -1756,10 +2825,12 @@ int main(int argc, char *argv[])
     // Params
     string default_ip = "127.0.0.1";
     string robot_ip = node->declare_parameter("ip", default_ip);
-    string agv_ns = node->declare_parameter("agv_ns", "/JAGV_O_01");
 
     edg_init_ip = make_edg_bcast(robot_ip);
     RCLCPP_INFO(node->get_logger(), "EDG init IP set to: %s", edg_init_ip.c_str());
+
+    agv_http_host = robot_ip;
+    agv_http_port = "5002";
 
     // Connect
     int ret = robot.login_in(robot_ip.c_str());
@@ -1849,6 +2920,27 @@ int main(int argc, char *argv[])
         }
     }
 
+    string agv_odom_topic = find_agv_global_nav_odom_topic(node, 10.0);
+    if (agv_odom_topic.empty()) {
+        RCLCPP_FATAL(node->get_logger(),
+                    "Could not find AGV odom topic matching */agv/global_nav_odom with type nav_msgs/msg/Odometry");
+        return -1;
+    }
+    RCLCPP_INFO(node->get_logger(),
+                "Subscribing to AGV odom topic: %s", agv_odom_topic.c_str());
+    agv_odom_sub = node->create_subscription<nav_msgs::msg::Odometry>(agv_odom_topic, 10, agv_odom_callback);
+
+    string agv_cmd_vel_topic = find_agv_cmd_vel_topic(node, 10.0);
+    if (agv_cmd_vel_topic.empty()) {
+        RCLCPP_FATAL(node->get_logger(),
+                    "Could not find AGV cmd_vel topic matching */agv/cmd_vel with type geometry_msgs/msg/Twist");
+        return -1;
+    }
+
+    RCLCPP_INFO(node->get_logger(),
+                "Publishing AGV cmd_vel to topic: %s", agv_cmd_vel_topic.c_str());
+    agv_cmd_vel_pub = node->create_publisher<geometry_msgs::msg::Twist>(agv_cmd_vel_topic, 10);
+
     //--------Services------------//
     auto linear_move_service = node->create_service<jaka_kargo_msgs::srv::Move>("/jaka_kargo_driver/linear_move", &linear_move_callback);
     auto joint_move_service = node->create_service<jaka_kargo_msgs::srv::Move>("/jaka_kargo_driver/joint_move", &joint_move_callback);
@@ -1873,9 +2965,16 @@ int main(int argc, char *argv[])
     auto ext_enable_service = node->create_service<jaka_kargo_msgs::srv::ExtEnable>("/jaka_kargo_driver/ext_enable", &ext_enable_callback);
     auto jog_ext_service = node->create_service<jaka_kargo_msgs::srv::JogExt>("/jaka_kargo_driver/jog_ext", &jog_ext_callback);
     auto multi_move_ext_service = node->create_service<jaka_kargo_msgs::srv::MultiMoveExt>("/jaka_kargo_driver/multi_move_ext", &multi_move_ext_callback);
-    auto agv_auto_move_service = node->create_service<jagv_interfaces::srv::AutoMove>("/jaka_kargo_driver/agv_auto_move", &agv_auto_move_callback);
-    auto agv_motion_state_control_service = node->create_service<jagv_interfaces::srv::MotionStateControl>("/jaka_kargo_driver/agv_motion_state_control", &agv_motion_state_control_callback);
+    auto agv_get_current_map_service = node->create_service<jaka_kargo_msgs::srv::AgvGetCurrentMap>("/jaka_kargo_driver/agv_get_current_map", &agv_get_current_map_callback);
+    auto agv_map_change_service = node->create_service<jaka_kargo_msgs::srv::AgvMapChange>("/jaka_kargo_driver/agv_map_change", &agv_map_change_callback);
+    auto agv_auto_move_service = node->create_service<jaka_kargo_msgs::srv::AgvAutoMove>("/jaka_kargo_driver/agv_auto_move", &agv_auto_move_callback);
+    auto agv_motion_state_control_service = node->create_service<jaka_kargo_msgs::srv::AgvMotionStateControl>("/jaka_kargo_driver/agv_motion_state_control", &agv_motion_state_control_callback);
     auto agv_cmd_vel_service = node->create_service<jaka_kargo_msgs::srv::AgvCmdVel>("/jaka_kargo_driver/agv_cmd_vel", &agv_cmd_vel_callback);
+    auto agv_post_map_location_service = node->create_service<jaka_kargo_msgs::srv::AgvPostMapLocation>("/jaka_kargo_driver/agv_post_map_location", &agv_post_map_location_callback);
+    auto agv_post_map_navigation_service = node->create_service<jaka_kargo_msgs::srv::AgvPostMapNavigation>("/jaka_kargo_driver/agv_post_map_navigation", &agv_post_map_navigation_callback);
+    auto agv_set_map_location_service = node->create_service<jaka_kargo_msgs::srv::AgvSetMapLocation>("/jaka_kargo_driver/agv_set_map_location", &agv_set_map_location_callback);
+    auto agv_get_current_node_service = node->create_service<jaka_kargo_msgs::srv::AgvGetCurrentNode>("/jaka_kargo_driver/agv_get_current_node", &agv_get_current_node_callback);
+    auto agv_get_battery_service = node->create_service<jaka_kargo_msgs::srv::AgvGetBattery>("/jaka_kargo_driver/agv_get_battery", &agv_get_battery_callback);
 
     // End position pose status information reporting
     tool_position_pub = node->create_publisher<geometry_msgs::msg::TwistStamped>("/jaka_kargo_driver/tool_position", 10);
@@ -1883,13 +2982,6 @@ int main(int argc, char *argv[])
     joint_position_pub = node->create_publisher<sensor_msgs::msg::JointState>("/jaka_kargo_driver/joint_position", 10);
     // /Report robot event status information
     robot_states_pub = node->create_publisher<jaka_kargo_msgs::msg::RobotStates>("/jaka_kargo_driver/robot_states", 10);
-
-    // AGV ROS bridge
-    agv_cmd_vel_pub = node->create_publisher<geometry_msgs::msg::Twist>(agv_ns + "/cmd_vel", 10);
-    agv_odom_sub = node->create_subscription<nav_msgs::msg::Odometry>(agv_ns + "/global_nav_odom", 10, agv_odom_callback);
-    agv_motion_state_sub = node->create_subscription<jagv_interfaces::msg::MotionState>(agv_ns + "/motion_state", 10, agv_motion_state_callback);
-    agv_auto_move_client = node->create_client<jagv_interfaces::srv::AutoMove>(agv_ns + "/agv_auto_move");
-    agv_motion_ctrl_client = node->create_client<jagv_interfaces::srv::MotionStateControl>(agv_ns + "/motion_state_control");
 
     // Monitor network connection status (runs in background thread)
     thread conn_state_thread(get_connect_state);
