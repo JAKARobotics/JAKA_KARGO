@@ -2740,8 +2740,8 @@ void robot_states_callback(const rclcpp::Publisher<jaka_kargo_msgs::msg::RobotSt
             robot_states.agv_obstacle_avoidance = (motion_state == 4);      // 4 obstacle avoidance
             robot_states.agv_unknown            = (motion_state == -1);     // -1 unknown
 
-            // AGV is enabled/ready when MotionState == 0 and WheelState == 10
-            robot_states.agv_enabled = (motion_state == 0 && wheel_state == 10);
+            // AGV is enabled/ready when MotionState != 3
+            robot_states.agv_enabled = motion_state != 3;
 
             // WheelState:
             robot_states.agv_wheel_idle    = (wheel_state == 10);       // 10 idle
