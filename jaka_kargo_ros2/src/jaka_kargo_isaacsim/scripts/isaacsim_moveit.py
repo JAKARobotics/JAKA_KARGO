@@ -2,109 +2,157 @@
 
 import os
 from pathlib import Path
-from omni.isaac.kit import SimulationApp
 
-KARGO_STAGE_PATH = "/World/jaka_kargo"
+from isaacsim import SimulationApp
+
+
 GRAPH_PATH = "/ActionGraph"
-CONFIG = {"renderer": "RayTracedLighting", "headless": False}
+
+CONFIG = {
+    "renderer": "RayTracedLighting",
+    "headless": False,
+}
 
 simulation_app = SimulationApp(CONFIG)
 
 from isaacsim.core.api import SimulationContext
-from isaacsim.core.utils import extensions
-from omni.usd import get_context
-from pxr import Usd
+from isaacsim.core.utils.extensions import enable_extension
+from isaacsim.core.utils.stage import is_stage_loading, open_stage
 
-extensions.enable_extension("isaacsim.ros2.bridge")
-extensions.enable_extension("isaacsim.ros2.urdf")
-extensions.enable_extension("isaacsim.ros2.tf_viewer")
-# extensions.enable_extension("isaacsim.code_editor.vscode")
-# extensions.enable_extension("omni.kit.debug.vscode")
+import omni.graph.core as og
 
-def _resolve_usd():
-    p = os.environ.get("KARGO_USD_PATH", "")
-    if p:
-        return p
+
+enable_extension("isaacsim.ros2.bridge")
+
+for _ in range(20):
+    simulation_app.update()
+
+
+def resolve_usd():
+    path = os.environ.get("KARGO_USD_PATH", "")
+
+    if path:
+        return path
+
     try:
-        from ament_index_python.packages import get_package_share_directory
-        pkg_share = get_package_share_directory("jaka_kargo_description")
-        return str(Path(pkg_share) / "urdf/jaka_kargo/jaka_kargo.usd")
+        from ament_index_python.packages import (
+            get_package_share_directory,
+        )
+
+        package_share = get_package_share_directory(
+            "jaka_kargo_description"
+        )
+
+        return str(
+            Path(package_share)
+            / "urdf"
+            / "jaka_kargo"
+            / "jaka_kargo_moveit.usd"
+        )
+
     except Exception:
-        return str(Path(__file__).resolve().parents[2] /
-                   "jaka_kargo_description/urdf/jaka_kargo/jaka_kargo.usd")
-
-KARGO_USD_PATH = _resolve_usd()
-
-# print(f"Resolved USD path: {KARGO_USD_PATH}, exists={os.path.exists(KARGO_USD_PATH)}")
-
-# print(f"🚀 Isaac Sim starting, loading USD: {KARGO_USD_PATH}")
-
-# kargo_stage = get_context().open_stage(KARGO_USD_PATH)
-# # if not isinstance(kargo_stage, Usd.Stage):
-# #     raise RuntimeError("Failed to open stage.")
-
-# print("Stage Opened")
-
-# kargo_prim = get_context().get_stage().GetPrimAtPath(KARGO_STAGE_PATH)
-# print("Prim found:", bool(kargo_prim) and kargo_prim.IsValid())
-
-# if not kargo_prim or not kargo_prim.IsValid():
-#     raise RuntimeError(f"Prim not found: {KARGO_STAGE_PATH}")
-
-# # list children (quick view of links)
-# print("Children names under /jaka_kargo:")
-# for c in kargo_prim.GetChildren():
-#     print("  -", c.GetName(), c.GetTypeName())
+        return str(
+            Path(__file__).resolve().parents[2]
+            / "jaka_kargo_description"
+            / "urdf"
+            / "jaka_kargo"
+            / "jaka_kargo_moveit.usd"
+        )
 
 
-# sanity
-print(f"Resolved USD path: {KARGO_USD_PATH}, exists={os.path.exists(KARGO_USD_PATH)}")
+def get_graph_attribute(attribute_path):
+    attribute = og.Controller.attribute(attribute_path)
+
+    if not attribute.is_valid():
+        raise RuntimeError(
+            f"OmniGraph attribute not found: {attribute_path}"
+        )
+
+    return attribute
+
+
+KARGO_USD_PATH = resolve_usd()
+
+print(
+    f"Resolved USD path: {KARGO_USD_PATH}, "
+    f"exists={os.path.exists(KARGO_USD_PATH)}"
+)
+
 if not os.path.exists(KARGO_USD_PATH):
-    raise RuntimeError(f"USD not found: {KARGO_USD_PATH}")
+    raise RuntimeError(
+        f"USD not found: {KARGO_USD_PATH}"
+    )
 
-# request the stage open (do NOT use file:// prefix here)
-ctx = get_context()
-ctx.open_stage(KARGO_USD_PATH)    # non-blocking / asynchronous in many Kit builds
+if not open_stage(KARGO_USD_PATH):
+    raise RuntimeError(
+        f"Failed to open USD stage: {KARGO_USD_PATH}"
+    )
 
+while is_stage_loading():
+    simulation_app.update()
 
-import time 
+print(
+    f"Stage opened successfully: {KARGO_USD_PATH}"
+)
 
-# poll until the stage is actually available and has the expected root
-stage = None
-basename = os.path.basename(KARGO_USD_PATH)
-timeout = 10.0   # seconds
-t0 = time.time()
-while time.time() - t0 < timeout:
-    # allow Kit to process events and background loading
-    simulation_app.update()   # important: gives the app a chance to finish stage load
-    stage = ctx.get_stage()
-    if isinstance(stage, Usd.Stage):
-        root = stage.GetRootLayer().realPath or ""
-        # sometimes realPath may be empty; if so, also check GetSessionLayer etc
-        if basename in root or stage.GetSessionLayer().identifier == KARGO_USD_PATH or stage.GetRootLayer().identifier == KARGO_USD_PATH:
-            break
-    time.sleep(0.05)
+read_sim_time = get_graph_attribute(
+    f"{GRAPH_PATH}/ReadSimTime.outputs:simulationTime"
+)
 
-if not isinstance(stage, Usd.Stage):
-    # helpful debug info before failing
-    print("DEBUG: ctx.get_stage() ->", ctx.get_stage())
-    raise RuntimeError(f"Stage never finished loading in {timeout}s: {KARGO_USD_PATH!r}")
+publish_joint_time = get_graph_attribute(
+    f"{GRAPH_PATH}/PublishJointState.inputs:timeStamp"
+)
 
-print("Stage opened successfully:", stage.GetRootLayer().realPath)
+publish_clock_time = get_graph_attribute(
+    f"{GRAPH_PATH}/PublishClock.inputs:timeStamp"
+)
 
+publish_joint_topic = get_graph_attribute(
+    f"{GRAPH_PATH}/PublishJointState.inputs:topicName"
+)
 
-simulation_context = SimulationContext(stage_units_in_meters=1.0)
+subscribe_joint_topic = get_graph_attribute(
+    f"{GRAPH_PATH}/SubscribeJointState.inputs:topicName"
+)
 
-# Run app update for multiple frames to re-initialize the ROS action graph after setting new prim inputs
+publish_clock_topic = get_graph_attribute(
+    f"{GRAPH_PATH}/PublishClock.inputs:topicName"
+)
+
+publish_joint_topic.set("/isaac_joint_states")
+subscribe_joint_topic.set("/isaac_joint_commands")
+publish_clock_topic.set("/clock")
+
+if not read_sim_time.is_connected(publish_joint_time):
+    if not read_sim_time.connect(
+        publish_joint_time,
+        True,
+    ):
+        raise RuntimeError(
+            "Failed to connect simulation time to "
+            "PublishJointState"
+        )
+
+if not read_sim_time.is_connected(publish_clock_time):
+    if not read_sim_time.connect(
+        publish_clock_time,
+        True,
+    ):
+        raise RuntimeError(
+            "Failed to connect simulation time to PublishClock"
+        )
+
 simulation_app.update()
 simulation_app.update()
+
+simulation_context = SimulationContext(
+    stage_units_in_meters=1.0
+)
 
 simulation_context.play()
 simulation_app.update()
 
 while simulation_app.is_running():
-
-    # Run with a fixed step size
     simulation_context.step(render=True)
 
 simulation_context.stop()
