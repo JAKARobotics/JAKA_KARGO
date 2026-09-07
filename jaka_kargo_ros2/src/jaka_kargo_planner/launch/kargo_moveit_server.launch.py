@@ -3,6 +3,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch_ros.actions import Node
 from launch.substitutions import LaunchConfiguration
+from launch_ros.parameter_descriptions import ParameterValue
 
 def generate_launch_description():
     return LaunchDescription([
@@ -27,7 +28,7 @@ def generate_launch_description():
                 {'ip': LaunchConfiguration('ip')},  # Pass 'ip' parameter
                 {'ext_vel': LaunchConfiguration('ext_vel')},
                 {'ext_acc': LaunchConfiguration('ext_acc')},
-                {'agv_map_name': LaunchConfiguration('agv_map_name')},
+                {'agv_map_name': ParameterValue(LaunchConfiguration('agv_map_name'), value_type=str,)},
                 {'agv_linear_speed': LaunchConfiguration('agv_linear_speed')},
             ],
         ),
