@@ -584,35 +584,14 @@ ros2 service call /jaka_kargo_driver/agv_get_battery jaka_kargo_msgs/srv/AgvGetB
 
 ## 🧪 MoveIt Simulation Modes
 
-To support both RViz-only simulation and Isaac Sim integration, this project uses a modified `launches.py` from MoveIt2's `moveit_configs_utils`.  
+The shared [`jaka_moveit_launches`](./src/jaka_moveit_launches/jaka_moveit_launches/launches.py) package supports both RViz-only simulation and Isaac Sim integration. Build and source this workspace to use it; there is no need to modify MoveIt's installed `launches.py`.
 
-🛠️ **Modifications**:
+**Supported launch options**:
 
 - Adds **use_rviz_sim** and **use_isaac_sim** arguments.
 - Determines whether fake controllers or Isaac Sim interfaces are spawned, based on the provided argument.
 
-⚙️ **Setup**:
-
-- Replace the original `launches.py` from MoveIt2 with the modified version provided in **jaka_kargo_ros2** package.
-- Find the original file:  
-  ```bash
-  find /opt/ros/humble/ -name launches.py
-  ```
-- Backup the original:
-  ```bash
-  sudo cp /opt/ros/humble/lib/python3.10/site-packages/moveit_configs_utils/launches.py \
-        /opt/ros/humble/lib/python3.10/site-packages/moveit_configs_utils/launches.py.bak
-  ```
-- Replace it with the `launches.py` from this repo:
-  ```bash
-  sudo cp ~/JAKA_KARGO/jaka_kargo_ros2/launches.py \
-        /opt/ros/humble/lib/python3.10/site-packages/moveit_configs_utils/launches.py
-  ```
-- Source environments:
-  ```bash
-  source /opt/ros/humble/setup.bash
-  source ~/JAKA_KARGO/jaka_kargo_ros2/install/setup.bash
-  ```
+If you previously replaced MoveIt's `launches.py` manually, restore the original file for your installed MoveIt version; `jaka_moveit_launches` now provides the required custom launch behavior.
 
 ### 🚀 Launch Moveit Simulation Modes  
 
